@@ -25,7 +25,7 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Instalar Pillow para iconos
+      - name: Instalar Pillow
         run: pip install Pillow --break-system-packages
 
       - name: Instalar dependencias Capacitor
@@ -43,7 +43,7 @@ jobs:
       - name: Inyectar TTS nativo en MainActivity
         run: python3 patch-mainactivity.py
 
-      - name: Aplicar icono en todas las carpetas mipmap
+      - name: Aplicar icono
         run: python3 patch-icon.py
 
       - name: Dar permisos a Gradle
