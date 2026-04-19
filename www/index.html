@@ -896,14 +896,32 @@ function normTTS(texto) {
 //  DIVIDIR EN ORACIONES
 // ══════════════════════════════════════════════════════
 function splitSents(par) {
+  // Paso 1: dividir en oraciones por puntuación
   var raw = par.match(/[^.!?…]+(?:[.!?…]+(?:\s|$))+/g);
   if (!raw || !raw.length) raw = [par];
-  var out = [], buf = '';
+
+  // Paso 2: cada oración, si supera 120 chars, cortarla en límite de palabra
+  var out = [];
   for (var s of raw) {
-    buf += s;
-    if (buf.trim().length >= 150) { out.push(buf.trim()); buf = ''; }
+    var txt = s.trim();
+    if (!txt) continue;
+    if (txt.length <= 120) {
+      out.push(txt);
+    } else {
+      // Cortar en palabras sin superar 120 chars
+      var palabras = txt.split(' ');
+      var chunk = '';
+      for (var p of palabras) {
+        if ((chunk + ' ' + p).trim().length > 120) {
+          if (chunk.trim()) out.push(chunk.trim());
+          chunk = p;
+        } else {
+          chunk = chunk ? chunk + ' ' + p : p;
+        }
+      }
+      if (chunk.trim()) out.push(chunk.trim());
+    }
   }
-  if (buf.trim()) out.push(buf.trim());
   return out.filter(function(s) { return s.length > 2; });
 }
 
