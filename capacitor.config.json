@@ -1,0 +1,14 @@
+{
+  "appId": "com.lecturapura.app",
+  "appName": "Lectura Pura",
+  "webDir": "www",
+  "android": {
+    "allowMixedContent": true,
+    "backgroundColor": "#f5f0e8"
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0
+    }
+  }
+}
