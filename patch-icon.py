@@ -1,21 +1,20 @@
 #!/usr/bin/env python3
 """
-patch-icon.py
-Copia el icono a todas las carpetas mipmap de Android
-en los tamaños correctos usando PIL.
+patch-icon.py — Copia icono a todas las carpetas mipmap de Android
+Método manual directo, sin dependencias externas a Pillow.
 """
-import os, sys, shutil
+import os, shutil, subprocess, sys
 
+# Instalar Pillow si no está
 try:
     from PIL import Image
 except ImportError:
-    os.system("pip install Pillow --break-system-packages -q")
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'Pillow', '--break-system-packages', '-q'])
     from PIL import Image
 
 SRC = "resources/icon.png"
 BASE = "android/app/src/main/res"
 
-# Tamaños oficiales de Android por carpeta mipmap
 SIZES = {
     "mipmap-mdpi":    48,
     "mipmap-hdpi":    72,
@@ -25,16 +24,20 @@ SIZES = {
 }
 
 img = Image.open(SRC).convert("RGBA")
+print(f"Icono fuente: {img.size[0]}x{img.size[1]}")
 
 for folder, size in SIZES.items():
     dst_dir = os.path.join(BASE, folder)
     os.makedirs(dst_dir, exist_ok=True)
     resized = img.resize((size, size), Image.LANCZOS)
-    dst = os.path.join(dst_dir, "ic_launcher.png")
-    resized.save(dst, "PNG")
-    # También ic_launcher_round
-    dst_r = os.path.join(dst_dir, "ic_launcher_round.png")
-    resized.save(dst_r, "PNG")
-    print(f"✅ {folder}: {size}x{size}")
+    resized.save(os.path.join(dst_dir, "ic_launcher.png"), "PNG")
+    resized.save(os.path.join(dst_dir, "ic_launcher_round.png"), "PNG")
+    resized.save(os.path.join(dst_dir, "ic_launcher_foreground.png"), "PNG")
+    print(f"  ✅ {folder}: {size}x{size}")
 
-print("\n✅ Iconos copiados a todas las carpetas mipmap")
+# También copiar al directorio drawable por si acaso
+drawable = os.path.join(BASE, "drawable")
+os.makedirs(drawable, exist_ok=True)
+img.resize((512, 512), Image.LANCZOS).save(os.path.join(drawable, "ic_launcher.png"), "PNG")
+
+print("\n✅ Iconos aplicados correctamente")

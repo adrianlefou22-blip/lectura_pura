@@ -453,7 +453,20 @@ function rellenarVoces() {
     var realIdx = voces.indexOf(v);
     var opt = document.createElement('option');
     opt.value = realIdx;
-    opt.textContent = (v.localService ? '★ ' : '') + v.name + ' (' + v.lang + ')';
+    // Nombre bonito para voces Android
+    var nombreBonito = v.name;
+    var langMap = {
+      'es-ES':'Español España','es-US':'Español EEUU','es-MX':'Español México',
+      'es-AR':'Español Argentina','es-CO':'Español Colombia','es-CL':'Español Chile'
+    };
+    var langBonito = langMap[v.lang] || langMap[v.lang.replace('_','-')] || v.lang;
+    if (/x-sfg|x-sfs|x-sfh|x-sfl|x-sfd|x-tpc|x-tes/.test(v.name)) {
+      nombreBonito = langBonito;
+    } else if (v.name.includes('#')) {
+      nombreBonito = v.name.split('#')[0].trim() || langBonito;
+    }
+    opt.textContent = (v.localService ? '★ ' : '') + nombreBonito + ' (' + v.lang + ')';
+    opt.title = v.name; // nombre técnico en tooltip
     sel.appendChild(opt);
   });
 
@@ -475,7 +488,10 @@ function rellenarVoces() {
     vozElegida = pick;
     vozIdx = i;
     guardarPrefs();
-    setSt('Voz: ' + pick.name + (pick.localService ? ' ★' : ''));
+    var _nb = pick.name;
+    var _lm = {'es-ES':'Español España','es-US':'Español EEUU','es-MX':'Español México','es-AR':'Español Argentina'};
+    if (/x-sfg|x-sfs|x-sfh|x-sfl|x-sfd|x-tpc|x-tes/.test(pick.name)) _nb = _lm[pick.lang] || pick.lang;
+    setSt('🎙 Voz activa: ' + _nb + (pick.localService ? ' ★' : ''));
   }
   return true;
 }
@@ -1236,13 +1252,15 @@ function hablar() {
     try {
       // Watchdog empieza AQUÍ, justo cuando se llama speak()
       clearTimeout(WATCHDOG);
+      // Watchdog dinámico: ~60ms por caracter, mínimo 6s, máximo 40s
+      var _wdMs = Math.min(40000, Math.max(6000, (UTTERANCE.text||'').length * 60));
       WATCHDOG = setTimeout(function() {
         if (!playing) return;
         console.warn('Watchdog — forzando avance');
         UTTERANCE = null;
         sentI++;
         hablar();
-      }, 8000);
+      }, _wdMs);
       window.speechSynthesis.speak(UTTERANCE);
     } catch(err) {
       setSt('Error de voz: ' + err.message);
