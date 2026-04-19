@@ -502,7 +502,11 @@ function onVoice() {
     vozIdx = parseInt(i);
     vozElegida = window.speechSynthesis.getVoices()[vozIdx];
     guardarPrefs();
-    if (vozElegida) setSt('Voz: ' + vozElegida.name);
+    if (vozElegida) {
+    var _lm2 = {'es-ES':'Español (España)','es-US':'Español (EE.UU)','es-MX':'Español (México)','es-AR':'Español (Argentina)','es-CO':'Español (Colombia)'};
+    var _nb2 = _lm2[vozElegida.lang] || _lm2[vozElegida.lang.replace('_','-')] || vozElegida.lang;
+    setSt('🎙 ' + _nb2 + (vozElegida.localService ? ' ★' : ''));
+  }
   } else {
     vozIdx = -1;
     vozElegida = null;
@@ -1252,11 +1256,12 @@ function hablar() {
     try {
       // Watchdog empieza AQUÍ, justo cuando se llama speak()
       clearTimeout(WATCHDOG);
-      // Watchdog dinámico: ~60ms por caracter, mínimo 6s, máximo 40s
-      var _wdMs = Math.min(40000, Math.max(6000, (UTTERANCE.text||'').length * 60));
+      // Watchdog dinámico: 300ms por palabra, mínimo 10s, máximo 60s
+      var _words = (UTTERANCE.text||'').trim().split(/\s+/).length;
+      var _wdMs = Math.min(60000, Math.max(10000, _words * 300));
       WATCHDOG = setTimeout(function() {
         if (!playing) return;
-        console.warn('Watchdog — forzando avance');
+        console.warn('Watchdog — forzando avance tras ' + _wdMs + 'ms');
         UTTERANCE = null;
         sentI++;
         hablar();
