@@ -17,103 +17,81 @@
 <script>
 // ══════════════════════════════════════════════════════
 //  SHIM TTS — usa Android JavascriptInterface nativo
-//  Inyectado por MainActivity.java via addJavascriptInterface
-//  En Chrome/Brave normal: speechSynthesis sigue igual
+//  Carga voces reales del sistema Android
 // ══════════════════════════════════════════════════════
 (function(){
-  // AndroidTTS es inyectado por Java — si existe, usarlo
   if (!window.AndroidTTS) return;
+  console.log('[TTS Shim] AndroidTTS detectado');
 
-  console.log('[TTS Shim] AndroidTTS detectado, activando shim nativo');
-
-  var _speaking = false;
   var _current = null;
+  var _voices = [];
 
-  function FakeUtterance(text){
-    this.text = text;
-    this.lang = 'es-ES';
-    this.rate = 1.0;
-    this.pitch = 1.0;
-    this.volume = 1.0;
-    this.voice = null;
-    this.voiceURI = null;
-    this.onstart = null;
-    this.onend = null;
-    this.onerror = null;
+  try {
+    var parsed = JSON.parse(window.AndroidTTS.getVoices());
+    _voices = parsed.map(function(v){
+      return {name:v.name, lang:v.lang, localService:v.local, voiceURI:v.name, default:false};
+    });
+  } catch(e){}
+  if (!_voices.length) {
+    _voices = [{name:'Android TTS', lang:'es-ES', localService:true, voiceURI:'android-native', default:true}];
   }
 
-  var voices = [
-    {name:'Android TTS (es-ES)', lang:'es-ES', localService:true,
-     voiceURI:'android-native', default:true}
-  ];
+  function FakeUtterance(text){
+    this.text=text; this.lang='es-ES'; this.rate=1.0; this.pitch=1.0;
+    this.volume=1.0; this.voice=null; this.voiceURI=null;
+    this.onstart=null; this.onend=null; this.onerror=null;
+  }
 
-  // Callback global que Java llama cuando termina de hablar
   window.__ttsOnEnd = function(){
-    _speaking = false;
-    if (_current && _current.onend) {
-      var u = _current;
-      _current = null;
-      u.onend({});
-    }
+    fakeSynth.speaking = false;
+    if (_current && _current.onend) { var u=_current; _current=null; u.onend({}); }
   };
   window.__ttsOnError = function(msg){
-    _speaking = false;
-    if (_current && _current.onerror) {
-      var u = _current;
-      _current = null;
-      u.onerror({error: msg || 'synthesis-failed'});
-    }
+    fakeSynth.speaking = false;
+    if (_current && _current.onerror) { var u=_current; _current=null; u.onerror({error:msg}); }
   };
 
   var fakeSynth = {
-    speaking: false,
-    pending: false,
-    paused: false,
-    onvoiceschanged: null,
-    getVoices: function(){ return voices; },
+    speaking: false, pending: false, paused: false, onvoiceschanged: null,
+    getVoices: function(){ return _voices; },
     speak: function(u){
-      _current = u;
-      _speaking = true;
-      this.speaking = true;
+      _current = u; this.speaking = true;
       var txt = (u.text||'').trim();
       if (!txt || txt.length < 2){
-        _speaking = false; this.speaking = false;
+        this.speaking = false;
         if (u.onend) setTimeout(function(){ u.onend({}); }, 30);
         return;
       }
       if (u.onstart) u.onstart({});
       try {
+        var voiceName = (u.voice && u.voice.name) ? u.voice.name : '';
+        var lang = (u.voice && u.voice.lang) ? u.voice.lang : (u.lang||'es-ES');
         window.AndroidTTS.speak(
-          txt,
-          u.lang || 'es-ES',
+          txt, lang,
           String(u.rate  !== undefined ? u.rate  : 1.0),
-          String(u.pitch !== undefined ? u.pitch : 1.0)
+          String(u.pitch !== undefined ? u.pitch : 1.0),
+          voiceName
         );
       } catch(e){
-        _speaking = false; this.speaking = false;
+        this.speaking = false;
         if (u.onerror) u.onerror({error: e.message});
       }
     },
     cancel: function(){
-      _speaking = false; this.speaking = false;
-      _current = null;
+      this.speaking = false; _current = null;
       try { window.AndroidTTS.stop(); } catch(e){}
     },
-    pause:  function(){},
-    resume: function(){}
+    pause: function(){}, resume: function(){}
   };
 
   Object.defineProperty(window,'speechSynthesis',{get:function(){return fakeSynth;},configurable:true});
   window.SpeechSynthesisUtterance = FakeUtterance;
-
-  // Disparar onvoiceschanged para que initVoces() funcione
-  setTimeout(function(){
-    if (fakeSynth.onvoiceschanged) fakeSynth.onvoiceschanged();
-  }, 100);
+  setTimeout(function(){ if (fakeSynth.onvoiceschanged) fakeSynth.onvoiceschanged(); }, 300);
 })();
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
 /* ══ TEMAS ══ */
 :root{
@@ -215,8 +193,8 @@ body{font-family:var(--fb);background:var(--bg);color:var(--tx);min-height:100vh
 /* Oración clickeable */
 .sent{cursor:pointer;border-radius:3px;padding:1px 2px;transition:background .12s;display:inline}
 .sent:hover{background:rgba(180,134,11,.18)}
-.sent.lit{background:rgba(180,134,11,.42);color:var(--sur);border-radius:3px}
-body.dark .sent.lit{color:#fff}
+.sent.lit{background:var(--gold);color:#fff;border-radius:4px;padding:2px 4px;box-shadow:0 1px 4px rgba(180,134,11,.4)}
+body.dark .sent.lit{background:var(--gold);color:#fff}
 
 /* ══ CONTROLES ══ */
 #ctrl{position:fixed;bottom:0;left:0;right:0;background:var(--sur);border-top:1px solid var(--bor);box-shadow:0 -2px 12px var(--shadow);padding:10px 14px 14px;display:none;flex-direction:column;gap:9px;z-index:50;transition:background .25s}
@@ -663,7 +641,7 @@ async function procesarArchivo(file) {
 
     if (!txt || txt.trim().length < 50) {
       hideLoad();
-      alert('No se pudo extraer texto de "' + file.name + '".\n\nSi es un PDF escaneado (imagen), el texto no es extraíble — necesitaría OCR externo.\n\nProbá convertirlo a TXT primero.');
+      alert('No se pudo extraer texto de "' + file.name + '".\n\nProbá con otro archivo.');
       return;
     }
 
@@ -678,13 +656,14 @@ async function procesarArchivo(file) {
 }
 
 // ══════════════════════════════════════════════════════
-//  PDF — con detección de PDF escaneado
+//  PDF — texto normal + OCR automático para escaneados
 // ══════════════════════════════════════════════════════
 async function leerPDF(file) {
   var ab = await file.arrayBuffer();
   var pdf = await pdfjsLib.getDocument({ data: ab }).promise;
   var txt = '';
   var paginasConTexto = 0;
+  var paginas = [];
 
   for (var i = 1; i <= pdf.numPages; i++) {
     showLoad('PDF: página ' + i + ' de ' + pdf.numPages + '...');
@@ -692,19 +671,43 @@ async function leerPDF(file) {
     var cnt = await pg.getTextContent();
     var pagTxt = cnt.items.map(function(it) { return it.str; }).join(' ').trim();
     if (pagTxt.length > 10) paginasConTexto++;
-    txt += pagTxt + '\n\n';
+    paginas.push({ idx: i, pg: pg, txt: pagTxt });
   }
 
-  // Detectar PDF escaneado: si menos del 20% de páginas tienen texto
-  if (paginasConTexto < pdf.numPages * 0.2 && pdf.numPages > 2) {
-    throw new Error(
-      'Este PDF parece ser un escaneado (imágenes).\n' +
-      'Solo ' + paginasConTexto + ' de ' + pdf.numPages + ' páginas tienen texto extraíble.\n\n' +
-      'Para leer PDFs escaneados necesitás convertirlos a texto primero con una app de OCR.'
-    );
+  // PDF con texto normal
+  var esEscaneado = paginasConTexto < pdf.numPages * 0.2;
+  if (!esEscaneado) {
+    return paginas.map(function(p){ return p.txt; }).join('\n\n');
   }
 
-  return txt;
+  // PDF escaneado — OCR con Tesseract.js
+  showLoad('PDF escaneado detectado — iniciando OCR...');
+  var worker = await Tesseract.createWorker('spa', 1, {
+    logger: function(m){
+      if (m.status === 'recognizing text') {
+        showLoad('OCR: ' + Math.round(m.progress * 100) + '%');
+      }
+    }
+  });
+
+  var resultado = '';
+  for (var j = 0; j < paginas.length; j++) {
+    showLoad('OCR página ' + (j+1) + ' de ' + paginas.length + '...');
+    var pg2 = paginas[j].pg;
+    var viewport = pg2.getViewport({ scale: 2.0 });
+    var canvas = document.createElement('canvas');
+    canvas.width  = viewport.width;
+    canvas.height = viewport.height;
+    var ctx = canvas.getContext('2d');
+    await pg2.render({ canvasContext: ctx, viewport: viewport }).promise;
+    var dataUrl = canvas.toDataURL('image/png');
+    var res = await worker.recognize(dataUrl);
+    resultado += res.data.text + '\n\n';
+    canvas.width = 0; // liberar memoria
+  }
+
+  await worker.terminate();
+  return resultado;
 }
 
 // ══════════════════════════════════════════════════════
@@ -1235,10 +1238,11 @@ function hablar() {
       clearTimeout(WATCHDOG);
       WATCHDOG = setTimeout(function() {
         if (!playing) return;
-        console.warn('Watchdog — reintentando');
+        console.warn('Watchdog — forzando avance');
         UTTERANCE = null;
+        sentI++;
         hablar();
-      }, 20000);
+      }, 8000);
       window.speechSynthesis.speak(UTTERANCE);
     } catch(err) {
       setSt('Error de voz: ' + err.message);
