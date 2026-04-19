@@ -25,6 +25,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Instalar Pillow para iconos
+        run: pip install Pillow --break-system-packages
+
       - name: Instalar dependencias Capacitor
         run: npm install
 
