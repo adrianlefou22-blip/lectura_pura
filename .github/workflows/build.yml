@@ -40,6 +40,9 @@ jobs:
       - name: Inyectar TTS nativo en MainActivity
         run: python3 patch-mainactivity.py
 
+      - name: Aplicar icono en todas las carpetas mipmap
+        run: python3 patch-icon.py
+
       - name: Dar permisos a Gradle
         run: chmod +x android/gradlew
 
