@@ -1,0 +1,1448 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="theme-color" content="#b8860b">
+<meta name="background-sync" content="true">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="HandheldFriendly" content="true">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Lectura Pura">
+<link rel="manifest" href="manifest.json">
+<title>Lectura Pura</title>
+<link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700&family=Source+Serif+4:wght@300;400;600&display=swap" rel="stylesheet">
+<script>
+// ══════════════════════════════════════════════════════
+//  SHIM TTS — usa Android JavascriptInterface nativo
+//  Inyectado por MainActivity.java via addJavascriptInterface
+//  En Chrome/Brave normal: speechSynthesis sigue igual
+// ══════════════════════════════════════════════════════
+(function(){
+  // AndroidTTS es inyectado por Java — si existe, usarlo
+  if (!window.AndroidTTS) return;
+
+  console.log('[TTS Shim] AndroidTTS detectado, activando shim nativo');
+
+  var _speaking = false;
+  var _current = null;
+
+  function FakeUtterance(text){
+    this.text = text;
+    this.lang = 'es-ES';
+    this.rate = 1.0;
+    this.pitch = 1.0;
+    this.volume = 1.0;
+    this.voice = null;
+    this.voiceURI = null;
+    this.onstart = null;
+    this.onend = null;
+    this.onerror = null;
+  }
+
+  var voices = [
+    {name:'Android TTS (es-ES)', lang:'es-ES', localService:true,
+     voiceURI:'android-native', default:true}
+  ];
+
+  // Callback global que Java llama cuando termina de hablar
+  window.__ttsOnEnd = function(){
+    _speaking = false;
+    if (_current && _current.onend) {
+      var u = _current;
+      _current = null;
+      u.onend({});
+    }
+  };
+  window.__ttsOnError = function(msg){
+    _speaking = false;
+    if (_current && _current.onerror) {
+      var u = _current;
+      _current = null;
+      u.onerror({error: msg || 'synthesis-failed'});
+    }
+  };
+
+  var fakeSynth = {
+    speaking: false,
+    pending: false,
+    paused: false,
+    onvoiceschanged: null,
+    getVoices: function(){ return voices; },
+    speak: function(u){
+      _current = u;
+      _speaking = true;
+      this.speaking = true;
+      var txt = (u.text||'').trim();
+      if (!txt || txt.length < 2){
+        _speaking = false; this.speaking = false;
+        if (u.onend) setTimeout(function(){ u.onend({}); }, 30);
+        return;
+      }
+      if (u.onstart) u.onstart({});
+      try {
+        window.AndroidTTS.speak(
+          txt,
+          u.lang || 'es-ES',
+          String(u.rate  !== undefined ? u.rate  : 1.0),
+          String(u.pitch !== undefined ? u.pitch : 1.0)
+        );
+      } catch(e){
+        _speaking = false; this.speaking = false;
+        if (u.onerror) u.onerror({error: e.message});
+      }
+    },
+    cancel: function(){
+      _speaking = false; this.speaking = false;
+      _current = null;
+      try { window.AndroidTTS.stop(); } catch(e){}
+    },
+    pause:  function(){},
+    resume: function(){}
+  };
+
+  Object.defineProperty(window,'speechSynthesis',{get:function(){return fakeSynth;},configurable:true});
+  window.SpeechSynthesisUtterance = FakeUtterance;
+
+  // Disparar onvoiceschanged para que initVoces() funcione
+  setTimeout(function(){
+    if (fakeSynth.onvoiceschanged) fakeSynth.onvoiceschanged();
+  }, 100);
+})();
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+/* ══ TEMAS ══ */
+:root{
+  --bg:#f5f0e8;--sur:#ffffff;--sur2:#f0ebe0;--bor:#ddd5c0;
+  --gold:#b8860b;--gold2:#d4a017;--tx:#1a1612;--tx2:#6b5f4a;
+  --shadow:rgba(0,0,0,.08);
+  --r:10px;
+  --fd:'Playfair Display',Georgia,serif;
+  --fb:'Source Serif 4',Georgia,serif;
+  --fs:1.1rem;
+}
+body.dark{
+  --bg:#0e0c0a;--sur:#1a1714;--sur2:#242018;--bor:#2e2a24;
+  --gold:#c9a84c;--gold2:#e8c97a;--tx:#e8e0d0;--tx2:#9c9080;
+  --shadow:rgba(0,0,0,.3);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--fb);background:var(--bg);color:var(--tx);min-height:100vh;overflow-x:hidden;transition:background .25s,color .25s}
+
+/* ══ BIENVENIDA ══ */
+#welcome{position:fixed;inset:0;z-index:100;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:30px;transition:background .25s}
+#welcome h1{font-family:var(--fd);font-size:clamp(2.6rem,9vw,5rem);color:var(--gold);line-height:1.1;margin-bottom:14px}
+#welcome p{color:var(--tx2);font-size:.94rem;max-width:290px;line-height:1.7;margin-bottom:6px}
+#welcome .sub{font-size:.75rem;color:var(--tx2);opacity:.6;margin-bottom:30px}
+.orn{color:var(--gold);opacity:.5;font-size:1.1rem;margin-bottom:16px;letter-spacing:.4em}
+
+/* ══ BOTONES ══ */
+.btn-gold{background:linear-gradient(135deg,var(--gold),var(--gold2));color:#fff;border:none;padding:14px 34px;font-family:var(--fb);font-size:.9rem;font-weight:600;letter-spacing:.08em;border-radius:50px;cursor:pointer;transition:opacity .2s,transform .15s;box-shadow:0 3px 12px var(--shadow)}
+.btn-gold:hover{opacity:.9;transform:translateY(-1px)}
+.btn-gold:active{transform:scale(.97)}
+.bi{background:var(--sur2);border:1px solid var(--bor);color:var(--tx);width:40px;height:40px;border-radius:50%;cursor:pointer;font-size:1rem;display:flex;align-items:center;justify-content:center;transition:all .2s;flex-shrink:0}
+.bi:hover{border-color:var(--gold);color:var(--gold)}
+/* Botones de control del player — mismo tamaño que play */
+#ctrl .bi{width:48px;height:48px;font-size:1.15rem}
+
+/* ══ APP ══ */
+#app{display:none;height:100vh;flex-direction:column}
+
+/* ══ TOPBAR ══ */
+#topbar{display:flex;align-items:center;padding:11px 14px;background:var(--sur);border-bottom:1px solid var(--bor);gap:10px;flex-shrink:0;box-shadow:0 1px 4px var(--shadow)}
+#tb-brand{font-family:var(--fd);font-size:1.2rem;color:var(--gold)}
+#tb-title{flex:1;font-size:.8rem;color:var(--tx2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:center}
+
+/* ══ BODY ══ */
+#app-body{display:flex;flex:1;overflow:hidden}
+
+/* ══ SIDEBAR ══ */
+#sidebar{width:270px;background:var(--sur);border-right:1px solid var(--bor);display:flex;flex-direction:column;overflow:hidden;flex-shrink:0;transition:width .3s ease}
+#sidebar.col{width:0}
+.stabs{display:flex;border-bottom:1px solid var(--bor);flex-shrink:0}
+.stab{flex:1;padding:10px 4px;text-align:center;font-size:.7rem;letter-spacing:.07em;color:var(--tx2);cursor:pointer;border-bottom:2px solid transparent;transition:all .2s;white-space:nowrap}
+.stab.on{color:var(--gold);border-bottom-color:var(--gold)}
+.scont{flex:1;overflow-y:auto;padding:9px}
+.scont::-webkit-scrollbar{width:3px}
+.scont::-webkit-scrollbar-thumb{background:var(--bor);border-radius:3px}
+
+/* ══ BOOK CARD ══ */
+.bcard{background:var(--sur2);border:1px solid var(--bor);border-radius:var(--r);padding:12px;margin-bottom:8px;cursor:pointer;transition:all .2s;position:relative}
+.bcard:hover{border-color:var(--gold);box-shadow:0 2px 8px var(--shadow)}
+.bcard.on{border-color:var(--gold);background:rgba(180,134,11,.06)}
+.bcard h4{font-family:var(--fd);font-size:.9rem;color:var(--tx);line-height:1.3;margin-bottom:4px;padding-right:18px}
+.bcard small{color:var(--tx2);font-size:.7rem}
+.pbar{height:2px;background:var(--bor);border-radius:2px;margin-top:8px}
+.pfill{height:100%;background:var(--gold);border-radius:2px;transition:width .3s}
+.bdel{position:absolute;top:9px;right:9px;background:none;border:none;color:var(--tx2);font-size:.72rem;cursor:pointer;opacity:0;transition:opacity .2s}
+.bcard:hover .bdel{opacity:1}
+.bdel:hover{color:#c0392b}
+.add-btn{width:100%;border:2px dashed var(--bor);background:transparent;color:var(--tx2);padding:14px;border-radius:var(--r);cursor:pointer;font-family:var(--fb);font-size:.86rem;transition:all .2s;margin-top:2px}
+.add-btn:hover{border-color:var(--gold);color:var(--gold)}
+/* Input file oculto — acepta todos los tipos para mobile */
+#fi{display:none}
+
+/* ══ CAPÍTULOS ══ */
+.chi{padding:8px 10px;border-radius:6px;cursor:pointer;margin-bottom:3px;font-size:.8rem;color:var(--tx2);transition:all .15s;border-left:2px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chi:hover{background:var(--sur2);color:var(--tx)}
+.chi.on{border-left-color:var(--gold);color:var(--gold);background:rgba(180,134,11,.06)}
+.chn{font-size:.66rem;color:var(--tx2);margin-right:4px}
+
+/* ══ READER ══ */
+#reader-area{flex:1;overflow-y:auto;display:flex;flex-direction:column}
+#reader-area::-webkit-scrollbar{width:5px}
+#reader-area::-webkit-scrollbar-thumb{background:var(--bor);border-radius:4px}
+
+#empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:40px 30px}
+#empty .ico{font-size:3.5rem;opacity:.25;margin-bottom:16px}
+#empty h3{font-family:var(--fd);font-size:1.3rem;color:var(--tx2);margin-bottom:8px}
+#empty p{color:var(--tx2);font-size:.86rem;line-height:1.6;max-width:260px}
+
+#book-reader{display:none;flex:1;flex-direction:column}
+#ch-header{padding:22px 32px 10px;border-bottom:1px solid var(--bor);flex-shrink:0}
+#ch-title{font-family:var(--fd);font-size:1.4rem;color:var(--gold);font-style:italic}
+#ch-info{color:var(--tx2);font-size:.75rem;margin-top:4px;display:block}
+#pcon{padding:22px 32px 160px;max-width:700px;width:100%;margin:0 auto}
+
+/* ══ PÁRRAFOS ══ */
+.par{font-size:var(--fs);line-height:2;color:var(--tx);margin-bottom:20px;padding:6px 10px;border-radius:6px;border-left:3px solid transparent;transition:border-color .2s,background .2s}
+.par.reading{border-left-color:var(--gold);background:rgba(180,134,11,.05)}
+
+/* Oración clickeable */
+.sent{cursor:pointer;border-radius:3px;padding:1px 2px;transition:background .12s;display:inline}
+.sent:hover{background:rgba(180,134,11,.18)}
+.sent.lit{background:rgba(180,134,11,.42);color:var(--sur);border-radius:3px}
+body.dark .sent.lit{color:#fff}
+
+/* ══ CONTROLES ══ */
+#ctrl{position:fixed;bottom:0;left:0;right:0;background:var(--sur);border-top:1px solid var(--bor);box-shadow:0 -2px 12px var(--shadow);padding:10px 14px 14px;display:none;flex-direction:column;gap:9px;z-index:50;transition:background .25s}
+.crow{display:flex;align-items:center;justify-content:center;gap:13px}
+.pbtn{background:linear-gradient(135deg,var(--gold),var(--gold2));color:#fff;border:none;width:62px;height:62px;border-radius:50%;font-size:1.5rem;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .2s;box-shadow:0 3px 10px var(--shadow)}
+.pbtn:hover{opacity:.9;transform:scale(1.05)}
+input[type=range]{-webkit-appearance:none;height:4px;background:var(--bor);border-radius:4px;outline:none;cursor:pointer}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--gold)}
+#vs{background:var(--sur2);border:1px solid var(--bor);color:var(--tx);padding:5px 9px;border-radius:20px;font-family:var(--fb);font-size:.73rem;max-width:155px}
+#vs option{background:var(--sur)}
+.lbl{font-size:.7rem;color:var(--tx2);white-space:nowrap}
+.pb{width:100%;height:2px;background:var(--bor);border-radius:2px}
+.pf{height:100%;background:var(--gold);border-radius:2px;transition:width .3s}
+#st{text-align:center;font-size:.7rem;color:var(--tx2);min-height:13px}
+
+/* ══ LOADING ══ */
+#lov{display:none;position:fixed;inset:0;z-index:200;background:rgba(0,0,0,.55);flex-direction:column;align-items:center;justify-content:center;gap:16px;backdrop-filter:blur(4px)}
+.spin{width:44px;height:44px;border:3px solid var(--bor);border-top-color:var(--gold);border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+#lbox{background:var(--sur);border-radius:var(--r);padding:28px 32px;text-align:center;box-shadow:0 8px 32px rgba(0,0,0,.2);display:flex;flex-direction:column;align-items:center;gap:14px}
+#lmsg{color:var(--tx2);font-size:.86rem;max-width:220px}
+
+/* ══ RESPONSIVE ══ */
+@media(max-width:600px){
+  #sidebar{position:fixed;top:55px;left:0;bottom:0;z-index:60;width:270px;transform:translateX(0);transition:transform .3s ease}
+  #sidebar.col{width:270px;transform:translateX(-270px)}
+  #pcon{padding:16px 16px 160px}
+  #ch-header{padding:16px 16px 10px}
+}
+</style>
+</head>
+<body>
+
+<!-- ══ BIENVENIDA ══ -->
+<div id="welcome">
+  <div class="orn">✦ ✦ ✦</div>
+  <h1>Lectura<br>Pura</h1>
+  <p>Tu biblioteca personal.<br>PDF, TXT y EPUB con voz.</p>
+  <p class="sub">Tocá el botón — activa el audio en el teléfono.</p>
+  <button class="btn-gold" onclick="arrancar()">🔊 ACTIVAR Y ABRIR</button>
+</div>
+
+<!-- ══ LOADING ══ -->
+<div id="lov">
+  <div id="lbox">
+    <div class="spin"></div>
+    <div id="lmsg">Procesando...</div>
+  </div>
+</div>
+
+<!-- ══ APP ══ -->
+<div id="app">
+  <div id="topbar">
+    <button class="bi" onclick="togSide()" title="Menú">☰</button>
+    <span id="tb-brand">LP</span>
+    <span id="tb-title">Seleccioná un libro</span>
+    <button class="bi" onclick="cambiarFuente(-1)" title="Fuente más pequeña" style="font-size:.85rem;font-weight:700">A-</button>
+    <button class="bi" onclick="cambiarFuente(1)" title="Fuente más grande" style="font-size:1rem;font-weight:700">A+</button>
+    <!-- Toggle tema claro/oscuro -->
+    <button class="bi" onclick="togTema()" id="btn-tema" title="Cambiar tema">🌙</button>
+  </div>
+
+  <div id="app-body">
+    <!-- SIDEBAR -->
+    <div id="sidebar">
+      <div class="stabs">
+        <div class="stab on" id="st-bib" onclick="togTab('bib')">📚 BIBLIOTECA</div>
+        <div class="stab" id="st-idx" onclick="togTab('idx')">📋 ÍNDICE</div>
+      </div>
+      <div class="scont" id="tc-bib">
+        <div id="blist"></div>
+        <button class="add-btn" onclick="document.getElementById('fi').click()">+ Agregar libro</button>
+        <!--
+          accept="*/*" es intencional:
+          en mobile (Android/iOS) los selectores de archivo a veces
+          bloquean EPUBs y PDFs con MIME types específicos.
+          El filtro real lo hacemos por extensión en JS.
+        -->
+        <input type="file" id="fi" accept="*/*" multiple>
+        <p style="color:var(--tx2);font-size:.68rem;text-align:center;margin-top:8px;line-height:1.5">
+          Soporta PDF · TXT · EPUB
+        </p>
+      </div>
+      <div class="scont" id="tc-idx" style="display:none">
+        <div id="idxlist">
+          <p style="color:var(--tx2);font-size:.8rem;text-align:center;padding:18px 0">Abrí un libro para ver el índice</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- LECTOR -->
+    <div id="reader-area">
+      <div id="empty">
+        <div class="ico">📖</div>
+        <h3>Sin libro abierto</h3>
+        <p>Agregá un PDF, TXT o EPUB.<br><br>Tocá cualquier oración del texto para leer desde ahí.</p>
+      </div>
+      <div id="book-reader">
+        <div id="ch-header">
+          <div id="ch-title"></div>
+          <small id="ch-info"></small>
+        </div>
+        <div id="pcon"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTROLES DE AUDIO -->
+  <div id="ctrl">
+    <div class="pb"><div class="pf" id="prog" style="width:0%"></div></div>
+    <div id="st">Tocá una oración para leer desde ahí</div>
+    <div class="crow">
+      <button class="bi" id="btn-prev"
+        title="Toque: oración anterior | Largo: capítulo anterior">⏮</button>
+      <button class="pbtn" id="bp" onclick="togPlay()">▶</button>
+      <button class="bi" id="btn-next"
+        title="Toque: oración siguiente | Largo: capítulo siguiente">⏭</button>
+    </div>
+    <div class="crow">
+      <button class="bi" onclick="cambiarVel(-1)" title="Reducir velocidad" style="font-weight:700;font-size:.9rem">−</button>
+      <button id="spd-v" style="background:var(--sur2);border:1px solid var(--bor);color:var(--tx);padding:6px 14px;border-radius:20px;font-family:var(--fb);font-size:.85rem;cursor:default;min-width:52px;text-align:center">1.0×</button>
+      <button class="bi" onclick="cambiarVel(1)" title="Aumentar velocidad" style="font-weight:700;font-size:.9rem">+</button>
+      <select id="vs" onchange="onVoice()">
+        <option value="">Cargando voces...</option>
+      </select>
+    </div>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════
+//  PDF.JS
+// ══════════════════════════════════════════════════════
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js';
+
+// ══════════════════════════════════════════════════════
+//  ESTADO GLOBAL
+// ══════════════════════════════════════════════════════
+var bib = [];
+var libIdx = null;
+var capI = 0, parI = 0, sentI = 0;
+var playing = false;
+var vozElegida = null;
+var vozIdx = -1;        // índice guardado de la voz
+var sideOpen = true;
+var temaOscuro = false;
+var UTTERANCE = null;   // referencia global — evita GC de Android
+var WATCHDOG = null;
+var _wdRetry = 0;
+var velActual = 1.0;    // velocidad TTS (reemplaza slider)
+var tamFuente = 1.1;    // tamaño fuente en rem
+
+// ══════════════════════════════════════════════════════
+//  ARRANQUE — el toque desbloquea el audio en mobile
+// ══════════════════════════════════════════════════════
+function arrancar() {
+  if (!('speechSynthesis' in window)) {
+    document.getElementById('welcome').innerHTML =
+      '<h2 style="color:var(--gold);font-family:var(--fd);margin-bottom:16px">Sin soporte de voz</h2>' +
+      '<p style="color:var(--tx2);max-width:280px">Usá Chrome o Brave en Android.</p>';
+    return;
+  }
+  // Desbloquear audio dentro del gesto táctil (obligatorio en mobile)
+  try {
+    UTTERANCE = new SpeechSynthesisUtterance(' ');
+    UTTERANCE.volume = 0;
+    window.speechSynthesis.speak(UTTERANCE);
+    setTimeout(function(){ window.speechSynthesis.cancel(); UTTERANCE = null; }, 300);
+  } catch(e) { UTTERANCE = null; }
+
+  document.getElementById('welcome').style.display = 'none';
+  document.getElementById('app').style.display = 'flex';
+
+  // Cargar preferencias guardadas
+  cargarPrefs();
+  cargarBib();
+  renderBib();
+  initVoces();
+}
+
+// ══════════════════════════════════════════════════════
+//  TEMA CLARO / OSCURO
+// ══════════════════════════════════════════════════════
+function cargarPrefs() {
+  try {
+    var p = JSON.parse(localStorage.getItem('lp-prefs') || '{}');
+    temaOscuro = p.dark !== undefined ? p.dark : false;
+    vozIdx = p.vozIdx !== undefined ? p.vozIdx : -1;
+    var spd = p.spd || 1;
+    velActual = parseFloat(spd);
+    document.getElementById('spd-v').textContent = velActual.toFixed(1) + '×';
+    if (p.fs) {
+      tamFuente = p.fs;
+      document.documentElement.style.setProperty('--fs', tamFuente + 'rem');
+    }
+  } catch(e) {}
+  aplicarTema();
+}
+
+function guardarPrefs() {
+  try {
+    localStorage.setItem('lp-prefs', JSON.stringify({
+      dark: temaOscuro,
+      vozIdx: vozIdx,
+      spd: velActual,
+      fs: tamFuente
+    }));
+  } catch(e) {}
+}
+
+function aplicarTema() {
+  document.body.classList.toggle('dark', temaOscuro);
+  document.getElementById('btn-tema').textContent = temaOscuro ? '☀️' : '🌙';
+  // También en bienvenida si todavía está visible
+  document.getElementById('welcome').style.background = 'var(--bg)';
+}
+
+function togTema() {
+  temaOscuro = !temaOscuro;
+  aplicarTema();
+  guardarPrefs();
+}
+
+function cambiarFuente(dir) {
+  tamFuente = Math.min(2.2, Math.max(0.8, Math.round((tamFuente + dir * 0.1) * 10) / 10));
+  document.documentElement.style.setProperty('--fs', tamFuente + 'rem');
+  guardarPrefs();
+}
+
+// ══════════════════════════════════════════════════════
+//  VOCES — con guardado de preferencia
+// ══════════════════════════════════════════════════════
+function initVoces() {
+  if (!rellenarVoces()) {
+    window.speechSynthesis.onvoiceschanged = rellenarVoces;
+    setTimeout(rellenarVoces, 800);
+    setTimeout(rellenarVoces, 2500);
+  }
+}
+
+function rellenarVoces() {
+  var voces = window.speechSynthesis.getVoices();
+  if (!voces || !voces.length) return false;
+
+  var sel = document.getElementById('vs');
+  sel.innerHTML = '<option value="">-- Elegir voz --</option>';
+
+  // Locales primero (más estables en Android/Brave)
+  var sorted = voces.slice().sort(function(a, b) {
+    if (a.localService && !b.localService) return -1;
+    if (!a.localService && b.localService) return 1;
+    return 0;
+  });
+
+  sorted.forEach(function(v) {
+    var realIdx = voces.indexOf(v);
+    var opt = document.createElement('option');
+    opt.value = realIdx;
+    opt.textContent = (v.localService ? '★ ' : '') + v.name + ' (' + v.lang + ')';
+    sel.appendChild(opt);
+  });
+
+  // Restaurar voz guardada primero
+  if (vozIdx >= 0 && vozIdx < voces.length) {
+    sel.value = vozIdx;
+    vozElegida = voces[vozIdx];
+    setSt('Voz: ' + vozElegida.name);
+    return true;
+  }
+
+  // Auto-elegir: local en español > cualquier español > primera
+  var pick = voces.find(function(v) { return v.localService && v.lang.startsWith('es'); })
+          || voces.find(function(v) { return v.lang.startsWith('es'); })
+          || voces[0];
+  if (pick) {
+    var i = voces.indexOf(pick);
+    sel.value = i;
+    vozElegida = pick;
+    vozIdx = i;
+    guardarPrefs();
+    setSt('Voz: ' + pick.name + (pick.localService ? ' ★' : ''));
+  }
+  return true;
+}
+
+function onVoice() {
+  var i = document.getElementById('vs').value;
+  if (i !== '') {
+    vozIdx = parseInt(i);
+    vozElegida = window.speechSynthesis.getVoices()[vozIdx];
+    guardarPrefs();
+    if (vozElegida) setSt('Voz: ' + vozElegida.name);
+  } else {
+    vozIdx = -1;
+    vozElegida = null;
+    guardarPrefs();
+  }
+}
+
+
+function cambiarVel(dir) {
+  velActual = Math.round(Math.min(2.0, Math.max(0.5, velActual + dir * 0.1)) * 10) / 10;
+  document.getElementById('spd-v').textContent = velActual.toFixed(1) + '×';
+  guardarPrefs();
+}
+
+// Compatibilidad: onSpd ya no se usa pero se mantiene por seguridad
+function onSpd() { guardarPrefs(); }
+
+// ══════════════════════════════════════════════════════
+//  SIDEBAR
+// ══════════════════════════════════════════════════════
+function togSide() {
+  sideOpen = !sideOpen;
+  document.getElementById('sidebar').classList.toggle('col', !sideOpen);
+}
+function togTab(tab) {
+  document.getElementById('st-bib').classList.toggle('on', tab === 'bib');
+  document.getElementById('st-idx').classList.toggle('on', tab === 'idx');
+  document.getElementById('tc-bib').style.display = tab === 'bib' ? 'block' : 'none';
+  document.getElementById('tc-idx').style.display = tab === 'idx' ? 'block' : 'none';
+}
+
+// ══════════════════════════════════════════════════════
+//  STORAGE — biblioteca (solo metadatos, no texto completo)
+// ══════════════════════════════════════════════════════
+function cargarBib() {
+  try { var r = localStorage.getItem('lp6'); if (r) bib = JSON.parse(r); } catch(e) { bib = []; }
+}
+function guardar() {
+  // Guardamos SOLO los metadatos, no el texto del párrafo (demasiado grande)
+  // El texto se guarda en sessionStorage por sesión
+  try {
+    var meta = bib.map(function(libro) {
+      return {
+        titulo: libro.titulo,
+        numCaps: libro.caps.length,
+        numPars: libro.caps.reduce(function(s,c){ return s+c.pars.length; }, 0),
+        uc: libro.uc, up: libro.up
+      };
+    });
+    localStorage.setItem('lp6-meta', JSON.stringify(meta));
+    // Guardar texto en sessionStorage (limpia al cerrar)
+    sessionStorage.setItem('lp6', JSON.stringify(bib));
+  } catch(e) {
+    // Si falla por espacio, limpiar libros viejos
+    try { sessionStorage.setItem('lp6', JSON.stringify(bib)); } catch(e2) {}
+  }
+  // También intentar localStorage para persistir
+  try { localStorage.setItem('lp6', JSON.stringify(bib)); } catch(e) {}
+}
+function cargarBib() {
+  try {
+    // Intentar localStorage primero
+    var r = localStorage.getItem('lp6');
+    if (!r) r = sessionStorage.getItem('lp6');
+    if (r) bib = JSON.parse(r);
+  } catch(e) { bib = []; }
+}
+
+// ══════════════════════════════════════════════════════
+//  BIBLIOTECA UI
+// ══════════════════════════════════════════════════════
+function renderBib() {
+  var el = document.getElementById('blist');
+  el.innerHTML = '';
+  if (!bib.length) {
+    el.innerHTML = '<p style="color:var(--tx2);font-size:.8rem;text-align:center;padding:14px 0">Sin libros. Tocá + Agregar.</p>';
+    return;
+  }
+  bib.forEach(function(libro, i) {
+    var total = libro.caps.reduce(function(s,c){ return s+c.pars.length; }, 0) || 1;
+    var leido = libro.caps.slice(0, libro.uc||0).reduce(function(s,c){ return s+c.pars.length; }, 0) + (libro.up||0);
+    var pct = Math.min(100, Math.round(leido/total*100));
+    var c = document.createElement('div');
+    c.className = 'bcard' + (libIdx === i ? ' on' : '');
+    c.innerHTML =
+      '<button class="bdel" onclick="event.stopPropagation();delLib('+i+')">✕</button>' +
+      '<h4>' + esc(libro.titulo) + '</h4>' +
+      '<small>' + libro.caps.length + ' caps · ' + pct + '% leído</small>' +
+      '<div class="pbar"><div class="pfill" style="width:'+pct+'%"></div></div>';
+    c.onclick = function() { abrirLibro(i); };
+    el.appendChild(c);
+  });
+}
+
+function esc(s) {
+  return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function delLib(i) {
+  if (!confirm('¿Eliminar este libro?')) return;
+  bib.splice(i, 1); guardar();
+  if (libIdx === i) { libIdx = null; detener(); showEmpty(); }
+  else if (libIdx > i) libIdx--;
+  renderBib();
+}
+
+// ══════════════════════════════════════════════════════
+//  CARGA DE ARCHIVOS
+//  FIX: accept="*/*" para que mobile muestre todos los archivos.
+//  La validación por extensión ocurre aquí en JS.
+// ══════════════════════════════════════════════════════
+document.getElementById('fi').onchange = async function(e) {
+  var files = Array.from(e.target.files);
+  if (!files.length) return;
+  for (var f of files) await procesarArchivo(f);
+  e.target.value = '';
+};
+
+async function procesarArchivo(file) {
+  var ext = file.name.split('.').pop().toLowerCase();
+  if (!['pdf','txt','epub','htm','html'].includes(ext)) {
+    if (!file.type.includes('pdf') && !file.type.includes('epub') && !file.type.includes('text')) {
+      alert('Formato no soportado: ' + file.name + '\nUsá archivos PDF, TXT o EPUB.');
+      return;
+    }
+  }
+  var titulo = file.name.replace(/\.[^.]+$/, '');
+  showLoad('Procesando: ' + file.name);
+  try {
+    // ── EPUB: leerEPUB retorna {__epubCaps:[...]} NO un string ──
+    // Si se llama .trim() sobre ese objeto → "txt.trim is not a function"
+    // Por eso se maneja ANTES del bloque genérico
+    if (ext === 'epub' || file.type === 'application/epub+zip') {
+      var epubData = await leerEPUB(file);
+      if (!epubData || !epubData.__epubCaps || !epubData.__epubCaps.length) {
+        hideLoad();
+        alert('No se pudo extraer texto del EPUB "' + file.name + '".');
+        return;
+      }
+      var libro = buildLibro(titulo, epubData);
+      bib.unshift(libro);
+      guardar(); renderBib(); hideLoad(); abrirLibro(0);
+      return;
+    }
+
+    var txt = '';
+    if (ext === 'pdf' || file.type === 'application/pdf') {
+      txt = await leerPDF(file);
+    } else {
+      txt = await file.text();
+    }
+
+    if (!txt || txt.trim().length < 50) {
+      hideLoad();
+      alert('No se pudo extraer texto de "' + file.name + '".\n\nSi es un PDF escaneado (imagen), el texto no es extraíble — necesitaría OCR externo.\n\nProbá convertirlo a TXT primero.');
+      return;
+    }
+
+    var libro = buildLibro(titulo, txt);
+    bib.unshift(libro);
+    guardar(); renderBib(); hideLoad(); abrirLibro(0);
+  } catch(err) {
+    hideLoad();
+    console.error(err);
+    alert('Error al leer "' + file.name + '":\n' + err.message);
+  }
+}
+
+// ══════════════════════════════════════════════════════
+//  PDF — con detección de PDF escaneado
+// ══════════════════════════════════════════════════════
+async function leerPDF(file) {
+  var ab = await file.arrayBuffer();
+  var pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+  var txt = '';
+  var paginasConTexto = 0;
+
+  for (var i = 1; i <= pdf.numPages; i++) {
+    showLoad('PDF: página ' + i + ' de ' + pdf.numPages + '...');
+    var pg = await pdf.getPage(i);
+    var cnt = await pg.getTextContent();
+    var pagTxt = cnt.items.map(function(it) { return it.str; }).join(' ').trim();
+    if (pagTxt.length > 10) paginasConTexto++;
+    txt += pagTxt + '\n\n';
+  }
+
+  // Detectar PDF escaneado: si menos del 20% de páginas tienen texto
+  if (paginasConTexto < pdf.numPages * 0.2 && pdf.numPages > 2) {
+    throw new Error(
+      'Este PDF parece ser un escaneado (imágenes).\n' +
+      'Solo ' + paginasConTexto + ' de ' + pdf.numPages + ' páginas tienen texto extraíble.\n\n' +
+      'Para leer PDFs escaneados necesitás convertirlos a texto primero con una app de OCR.'
+    );
+  }
+
+  return txt;
+}
+
+// ══════════════════════════════════════════════════════
+//  EPUB — FIX MEMORIA: leer capítulo a capítulo
+//  El problema anterior: se cargaba todo el EPUB en RAM
+//  concatenando strings enormes. Ahora procesamos de a
+//  un archivo HTML a la vez y liberamos memoria.
+// ══════════════════════════════════════════════════════
+async function leerEPUB(file) {
+  showLoad('Abriendo EPUB...');
+
+  var ab = await file.arrayBuffer();
+  var zip;
+  try {
+    zip = await JSZip.loadAsync(ab);
+  } catch(e) {
+    throw new Error('No se pudo abrir el EPUB. ¿Está dañado?');
+  }
+
+  // Leer container para encontrar el OPF
+  var containerFile = zip.file('META-INF/container.xml');
+  if (!containerFile) throw new Error('EPUB inválido: falta META-INF/container.xml');
+
+  var cxml = await containerFile.async('text');
+  var m = cxml.match(/full-path="([^"]+\.opf)"/i);
+  if (!m) throw new Error('EPUB inválido: no se encontró el archivo OPF');
+
+  var opfPath = m[1];
+  var base = opfPath.includes('/') ? opfPath.substring(0, opfPath.lastIndexOf('/') + 1) : '';
+
+  showLoad('Leyendo estructura del libro...');
+  var opfText = await zip.file(opfPath).async('text');
+  var opfDoc = new DOMParser().parseFromString(opfText, 'application/xml');
+
+  // Construir mapa id → href
+  var items = {};
+  opfDoc.querySelectorAll('manifest item').forEach(function(it) {
+    items[it.getAttribute('id')] = it.getAttribute('href');
+  });
+
+  // Obtener orden del spine
+  var spineRefs = Array.from(opfDoc.querySelectorAll('spine itemref'));
+  var archivosOrdenados = spineRefs
+    .map(function(ref) { return items[ref.getAttribute('idref')]; })
+    .filter(function(href) { return !!href; });
+
+  if (!archivosOrdenados.length) {
+    // Fallback: todos los HTML en orden alfabético
+    archivosOrdenados = Object.keys(zip.files)
+      .filter(function(n) { return /\.(html|xhtml|htm)$/i.test(n); })
+      .sort();
+  }
+
+  // ── Procesar de a un archivo para no saturar la RAM ──
+  var capsEPUB = [];
+  var totalArchivos = archivosOrdenados.length;
+
+  for (var ai = 0; ai < totalArchivos; ai++) {
+    var href = archivosOrdenados[ai];
+    var fullPath = base + href;
+    // Algunos hrefs ya incluyen el base
+    var zf = zip.file(fullPath) || zip.file(href);
+    if (!zf) continue;
+
+    showLoad('Capítulo ' + (ai+1) + ' de ' + totalArchivos + '...');
+
+    var htmlStr;
+    try {
+      htmlStr = await zf.async('text');
+    } catch(e) { continue; }
+
+    // Parsear y extraer texto — liberar referencia inmediatamente
+    var doc = new DOMParser().parseFromString(htmlStr, 'text/html');
+    htmlStr = null; // liberar memoria
+
+    // Remover scripts, estilos, notas al pie
+    ['script','style','nav','aside'].forEach(function(tag) {
+      Array.from(doc.querySelectorAll(tag)).forEach(function(el) { el.remove(); });
+    });
+
+    var cuerpo = doc.body ? doc.body.innerText : '';
+    doc = null; // liberar
+
+    cuerpo = cuerpo.replace(/\s+/g, ' ').trim();
+    if (cuerpo.length < 30) continue; // saltear capítulos vacíos
+
+    // Detectar título del capítulo
+    var titulo = 'Capítulo ' + (capsEPUB.length + 1);
+    var lineas = cuerpo.split(/\n/).slice(0, 3);
+    for (var li = 0; li < lineas.length; li++) {
+      var l = lineas[li].trim();
+      if (l.length > 3 && l.length < 80) { titulo = l; break; }
+    }
+
+    capsEPUB.push({ titulo: titulo, pars: mkPars(cuerpo) });
+
+    // Cada 5 capítulos dar un tick al event loop para no bloquear el UI
+    if (ai % 5 === 4) {
+      await new Promise(function(r) { setTimeout(r, 0); });
+    }
+  }
+
+  if (!capsEPUB.length) throw new Error('No se encontró texto en el EPUB.');
+
+  // Devolver el libro directamente (ya tenemos la estructura de caps)
+  // Retornamos un marcador especial para que procesarArchivo sepa
+  return { __epubCaps: capsEPUB };
+}
+
+// ══════════════════════════════════════════════════════
+//  CONSTRUIR LIBRO
+// ══════════════════════════════════════════════════════
+function buildLibro(titulo, textoOrEpub) {
+  // Si viene de EPUB ya tiene la estructura de caps
+  if (textoOrEpub && textoOrEpub.__epubCaps) {
+    return { titulo: titulo, caps: textoOrEpub.__epubCaps, uc: 0, up: 0 };
+  }
+
+  var texto = textoOrEpub;
+  var PAT = /^(cap[ií]tulo|chapter|parte|part|secci[oó]n|section|libro|book|cap\.?)\s*[\divxlIVXL]+[\s:.\-–)].{0,90}$|^\d+[\.\)]\s+[A-ZÁÉÍÓÚ].{5,80}$/im;
+  var lineas = texto.split('\n'), caps = [], bufT = 'Inicio', bufL = [];
+
+  for (var linea of lineas) {
+    var l = linea.trim();
+    if (l.length > 4 && l.length < 120 && PAT.test(l) && bufL.join('').length > 80) {
+      caps.push({ titulo: bufT, pars: mkPars(bufL.join('\n')) });
+      bufT = l; bufL = [];
+    } else { bufL.push(linea); }
+  }
+  if (bufL.length) caps.push({ titulo: bufT, pars: mkPars(bufL.join('\n')) });
+
+  if (caps.length <= 1) {
+    var todos = mkPars(texto), cf = [];
+    for (var i = 0; i < todos.length; i += 35)
+      cf.push({ titulo: 'Sección ' + (Math.floor(i/35)+1), pars: todos.slice(i, i+35) });
+    return { titulo: titulo, caps: cf.length ? cf : [{ titulo: 'Texto', pars: todos }], uc: 0, up: 0 };
+  }
+  return { titulo: titulo, caps: caps, uc: 0, up: 0 };
+}
+
+function mkPars(texto) {
+  return texto.split(/\n\s*\n/)
+    .map(function(p) { return p.replace(/\s+/g, ' ').trim(); })
+    .filter(function(p) { return p.length > 20; });
+}
+
+// ══════════════════════════════════════════════════════
+//  NORMALIZAR TEXTO PARA TTS
+//  Fix: palabras en MAYÚSCULAS se leen letra por letra.
+//  Solución: convertir a Title Case antes del TTS.
+// ══════════════════════════════════════════════════════
+function normTTS(texto) {
+  return texto.replace(/\b([A-ZÁÉÍÓÚÑÜ]{2,})\b/g, function(m) {
+    return m.charAt(0).toUpperCase() + m.slice(1).toLowerCase();
+  });
+}
+
+// ══════════════════════════════════════════════════════
+//  DIVIDIR EN ORACIONES
+// ══════════════════════════════════════════════════════
+function splitSents(par) {
+  var raw = par.match(/[^.!?…]+(?:[.!?…]+(?:\s|$))+/g);
+  if (!raw || !raw.length) raw = [par];
+  var out = [], buf = '';
+  for (var s of raw) {
+    buf += s;
+    if (buf.trim().length >= 150) { out.push(buf.trim()); buf = ''; }
+  }
+  if (buf.trim()) out.push(buf.trim());
+  return out.filter(function(s) { return s.length > 2; });
+}
+
+// ══════════════════════════════════════════════════════
+//  ABRIR LIBRO
+// ══════════════════════════════════════════════════════
+function abrirLibro(i) {
+  libIdx = i;
+  var libro = bib[i];
+  capI = libro.uc || 0;
+  parI = libro.up || 0;
+  sentI = 0;
+  document.getElementById('tb-title').textContent = libro.titulo;
+  document.getElementById('ctrl').style.display = 'flex';
+  renderIdx(); showCap(); renderBib();
+  if (window.innerWidth <= 600) {
+    sideOpen = false;
+    document.getElementById('sidebar').classList.add('col');
+  }
+}
+
+function renderIdx() {
+  var libro = bib[libIdx];
+  var el = document.getElementById('idxlist');
+  el.innerHTML = '';
+  libro.caps.forEach(function(cap, i) {
+    var d = document.createElement('div');
+    d.className = 'chi' + (i === capI ? ' on' : '');
+    d.innerHTML = '<span class="chn">' + (i+1) + '.</span>' + esc(cap.titulo);
+    d.onclick = function() { irCap(i); };
+    el.appendChild(d);
+  });
+}
+
+function irCap(i) {
+  capI = i; parI = 0; sentI = 0;
+  showCap();
+  if (playing) { window.speechSynthesis.cancel(); UTTERANCE = null; setTimeout(hablar, 80); }
+  if (window.innerWidth <= 600) {
+    sideOpen = false;
+    document.getElementById('sidebar').classList.add('col');
+  }
+}
+
+// ══════════════════════════════════════════════════════
+//  MOSTRAR CAPÍTULO
+// ══════════════════════════════════════════════════════
+function showCap() {
+  var libro = bib[libIdx];
+  var cap = libro.caps[capI];
+  document.getElementById('empty').style.display = 'none';
+  document.getElementById('book-reader').style.display = 'flex';
+  document.getElementById('ch-title').textContent = cap.titulo;
+  document.getElementById('ch-info').textContent =
+    'Cap. ' + (capI+1) + ' de ' + libro.caps.length + '  ·  ' + cap.pars.length + ' párrafos';
+  if (playing) actualizarMediaSession(cap.titulo);
+
+  var cont = document.getElementById('pcon');
+  cont.innerHTML = cap.pars.map(function(par, pi) {
+    var sents = splitSents(par);
+    var inner = sents.map(function(s, si) {
+      return '<span class="sent" id="sid-'+pi+'-'+si+'" onclick="clickSent('+pi+','+si+')" title="Leer desde aquí">'+esc(s)+'</span>';
+    }).join(' ');
+    return '<div class="par" id="par-'+pi+'">' + inner + '</div>';
+  }).join('');
+
+  document.querySelectorAll('.chi').forEach(function(el, i) {
+    el.classList.toggle('on', i === capI);
+  });
+  resaltar(); updProg(); savePos();
+}
+
+// ══════════════════════════════════════════════════════
+//  CLICK EN ORACIÓN → leer desde ahí
+// ══════════════════════════════════════════════════════
+function clickSent(pi, si) {
+  parI = pi; sentI = si;
+  resaltar(); updProg(); savePos();
+  if (!playing) {
+    playing = true;
+    document.getElementById('bp').textContent = '⏸';
+    activarWakeLock(); // mantener activo al iniciar por toque
+  } else {
+    window.speechSynthesis.cancel();
+    UTTERANCE = null;
+    clearTimeout(WATCHDOG);
+  }
+  setTimeout(hablar, 80);
+}
+
+// ══════════════════════════════════════════════════════
+//  RESALTADO
+// ══════════════════════════════════════════════════════
+function resaltar() {
+  document.querySelectorAll('.par').forEach(function(p) { p.classList.remove('reading'); });
+  document.querySelectorAll('.sent').forEach(function(s) { s.classList.remove('lit'); });
+  var pel = document.getElementById('par-' + parI);
+  if (pel) pel.classList.add('reading');
+  var sel = document.getElementById('sid-' + parI + '-' + sentI);
+  if (sel) {
+    sel.classList.add('lit');
+    sel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else if (pel) {
+    pel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+function updProg() {
+  var libro = bib[libIdx];
+  var total = libro.caps.reduce(function(s,c){ return s+c.pars.length; }, 0) || 1;
+  var leido = libro.caps.slice(0, capI).reduce(function(s,c){ return s+c.pars.length; }, 0) + parI;
+  document.getElementById('prog').style.width = Math.min(100, Math.round(leido/total*100)) + '%';
+}
+
+function savePos() {
+  if (libIdx === null) return;
+  bib[libIdx].uc = capI; bib[libIdx].up = parI;
+  guardar();
+}
+
+function showEmpty() {
+  document.getElementById('empty').style.display = 'flex';
+  document.getElementById('book-reader').style.display = 'none';
+  document.getElementById('ctrl').style.display = 'none';
+  document.getElementById('tb-title').textContent = 'Seleccioná un libro';
+}
+
+// ══════════════════════════════════════════════════════
+//  NAVEGACIÓN
+//  Botones prev/next con doble función:
+//  - Toque corto (<500ms): oración anterior/siguiente
+//  - Toque largo (>=500ms): capítulo anterior/siguiente
+// ══════════════════════════════════════════════════════
+function reiniciarTTS() {
+  if (playing) { window.speechSynthesis.cancel(); UTTERANCE = null; setTimeout(hablar, 80); }
+}
+
+function sentNext() {
+  if (libIdx === null) return;
+  var cap = bib[libIdx].caps[capI];
+  var sents = splitSents(cap.pars[parI] || '');
+  if (sentI < sents.length - 1) {
+    sentI++; resaltar(); updProg(); savePos(); reiniciarTTS();
+  } else {
+    parI++; sentI = 0;
+    if (parI >= cap.pars.length) { capNext(); return; }
+    resaltar(); updProg(); savePos(); reiniciarTTS();
+  }
+}
+
+function sentPrev() {
+  if (libIdx === null) return;
+  if (sentI > 0) {
+    sentI--; resaltar(); updProg(); savePos(); reiniciarTTS();
+  } else if (parI > 0) {
+    parI--; sentI = 0; resaltar(); updProg(); savePos(); reiniciarTTS();
+  } else {
+    capPrev();
+  }
+}
+
+function capNext() {
+  var libro = bib[libIdx];
+  if (capI < libro.caps.length - 1) {
+    capI++; parI = 0; sentI = 0; showCap(); renderIdx(); reiniciarTTS();
+  }
+}
+function capPrev() {
+  if (capI > 0) {
+    capI--; parI = 0; sentI = 0; showCap(); renderIdx(); reiniciarTTS();
+  }
+}
+// Funciones de párrafo (usadas en clickSent y saltos internos)
+function parNext() {
+  var cap = bib[libIdx].caps[capI];
+  if (parI < cap.pars.length - 1) {
+    parI++; sentI = 0; resaltar(); updProg(); savePos(); reiniciarTTS();
+  } else capNext();
+}
+function parPrev() {
+  if (parI > 0) {
+    parI--; sentI = 0; resaltar(); updProg(); savePos(); reiniciarTTS();
+  } else capPrev();
+}
+
+// ── Lógica de toque corto / toque largo ──
+(function() {
+  var LONG = 500; // ms para considerar toque largo
+  function bindLongPress(btnId, shortFn, longFn) {
+    var btn = document.getElementById(btnId);
+    if (!btn) return;
+    var timer = null;
+    var fired = false;
+    btn.addEventListener('pointerdown', function(e) {
+      fired = false;
+      timer = setTimeout(function() {
+        fired = true;
+        longFn();
+      }, LONG);
+    });
+    btn.addEventListener('pointerup', function(e) {
+      clearTimeout(timer);
+      if (!fired) shortFn();
+    });
+    btn.addEventListener('pointercancel', function() { clearTimeout(timer); });
+    btn.addEventListener('contextmenu', function(e) { e.preventDefault(); });
+  }
+  // Esperar a que el DOM esté listo
+  document.addEventListener('DOMContentLoaded', function() {
+    bindLongPress('btn-prev', sentPrev, capPrev);
+    bindLongPress('btn-next', sentNext, capNext);
+  });
+  // Fallback si DOMContentLoaded ya pasó
+  if (document.readyState !== 'loading') {
+    setTimeout(function() {
+      bindLongPress('btn-prev', sentPrev, capPrev);
+      bindLongPress('btn-next', sentNext, capNext);
+    }, 100);
+  }
+})();
+
+// ══════════════════════════════════════════════════════
+//  TTS ENGINE
+//
+//  Arquitectura probada para Brave/Chrome Android:
+//  - Una oración por utterance (~150 chars máx)
+//  - SIN pause()/resume() — en Android actúa como cancel()
+//  - UTTERANCE = variable global para evitar GC de Android
+//  - onend encola siguiente con setTimeout(50ms)
+//  - Watchdog de 30s con setTimeout (no pause)
+// ══════════════════════════════════════════════════════
+function togPlay() {
+  if (playing) { detener(); return; }
+  if (!('speechSynthesis' in window)) {
+    alert('Sin soporte de voz. Usá Chrome o Brave.'); return;
+  }
+  playing = true;
+  document.getElementById('bp').textContent = '⏸';
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+  activarWakeLock(); // mantener pantalla activa y audio vivo
+  hablar();
+}
+
+function detener() {
+  playing = false;
+  clearTimeout(WATCHDOG); WATCHDOG = null;
+  try { window.speechSynthesis.cancel(); } catch(e) {}
+  UTTERANCE = null;
+  desactivarWakeLock(); // liberar wake lock y audio context
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused';
+  document.getElementById('bp').textContent = '▶';
+  document.querySelectorAll('.sent.lit').forEach(function(s) { s.classList.remove('lit'); });
+  setSt('Tocá una oración para leer desde ahí');
+}
+
+function hablar() {
+  if (!playing) return;
+
+  var libro = bib[libIdx];
+  var cap = libro.caps[capI];
+
+  if (capI >= libro.caps.length) { detener(); return; }
+  if (parI >= cap.pars.length) {
+    if (capI < libro.caps.length - 1) {
+      capI++; parI = 0; sentI = 0; showCap(); renderIdx(); hablar();
+    } else { detener(); }
+    return;
+  }
+
+  var sents = splitSents(cap.pars[parI]);
+  if (sentI >= sents.length) {
+    parI++; sentI = 0; updProg(); savePos(); hablar(); return;
+  }
+
+  resaltar();
+  setSt('🔊 Leyendo...');
+
+  var textoTTS = normTTS(sents[sentI]);
+  var textoOriginal = sents[sentI];
+
+  // ── PROSODIA ─────────────────────────────────────────
+  // Analizar la oración para ajustar parámetros de voz
+  // según el contenido, imitando la prosodia humana natural
+  var baseRate  = velActual;
+  var basePitch = 1.0;
+  var baseVol   = 1.0;
+  var pausaPrevia = 0; // ms de pausa antes de hablar
+
+  // Exclamación → tono alto, más volumen, más energía
+  if (/[!¡]/.test(textoOriginal)) {
+    basePitch = 1.2;
+    baseVol   = 1.05;
+  }
+  // Interrogación → tono más alto (inflexión final ascendente)
+  else if (/[?¿]/.test(textoOriginal)) {
+    basePitch = 1.15;
+  }
+  // Puntos suspensivos → velocidad más lenta, efecto reflexivo
+  if (/\.{3}|…/.test(textoOriginal)) {
+    baseRate = Math.max(0.5, baseRate * 0.88);
+  }
+  // Títulos: línea corta toda en MAYÚSCULAS o empieza con "Capítulo/Chapter"
+  var esTitulo = (
+    (textoOriginal.length < 60 && /^[A-ZÁÉÍÓÚÑÜ\s\d\-:.]+$/.test(textoOriginal.trim()) && textoOriginal.trim().length > 2)
+    || /^(cap[ií]tulo|chapter|parte|part|secci[oó]n|section)/i.test(textoOriginal.trim())
+  );
+  if (esTitulo) {
+    basePitch  = 1.18;
+    baseRate   = Math.max(0.5, baseRate * 0.90);
+    pausaPrevia = 1600; // pausa dramática antes del título
+  }
+  // ─────────────────────────────────────────────────────
+
+  // Crear utterance con referencia global (evita GC Android)
+  UTTERANCE = new SpeechSynthesisUtterance(textoTTS);
+
+  // Asignar voz
+  var voces = window.speechSynthesis.getVoices();
+  var voz = vozElegida
+    || voces.find(function(v) { return v.localService && v.lang.startsWith('es'); })
+    || voces.find(function(v) { return v.lang.startsWith('es'); })
+    || (voces.length ? voces[0] : null);
+
+  if (voz) {
+    UTTERANCE.voice    = voz;
+    UTTERANCE.voiceURI = voz.voiceURI;
+    UTTERANCE.lang     = voz.lang;
+  } else {
+    UTTERANCE.lang = 'es-ES';
+  }
+  UTTERANCE.rate   = baseRate;
+  UTTERANCE.pitch  = basePitch;
+  UTTERANCE.volume = baseVol;
+
+  UTTERANCE.onstart = function() {
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
+  };
+
+  UTTERANCE.onend = function() {
+    clearTimeout(WATCHDOG); WATCHDOG = null;
+    _wdRetry = 0;
+    UTTERANCE = null;
+    if (!playing) return;
+    sentI++;
+    setTimeout(hablar, 50);
+  };
+
+  UTTERANCE.onerror = function(e) {
+    clearTimeout(WATCHDOG); WATCHDOG = null;
+    UTTERANCE = null;
+    if (e.error === 'interrupted' || e.error === 'canceled') return;
+    console.warn('TTS error:', e.error);
+    if (playing) { sentI++; setTimeout(hablar, 200); }
+  };
+
+  function doSpeak() {
+    if (!playing) return; // verificar antes de hablar (puede haber cambiado)
+    try {
+      // Watchdog empieza AQUÍ, justo cuando se llama speak()
+      clearTimeout(WATCHDOG);
+      WATCHDOG = setTimeout(function() {
+        if (!playing) return;
+        _wdRetry = (_wdRetry || 0) + 1;
+        if (_wdRetry >= 2) {
+          // Después de 2 reintentos en la misma oración, avanzar
+          console.warn('Watchdog — avanzando tras ' + _wdRetry + ' reintentos');
+          _wdRetry = 0;
+          UTTERANCE = null;
+          sentI++;
+        } else {
+          console.warn('Watchdog — reintentando (' + _wdRetry + ')');
+          UTTERANCE = null;
+        }
+        hablar();
+      }, 20000);
+      window.speechSynthesis.speak(UTTERANCE);
+    } catch(err) {
+      setSt('Error de voz: ' + err.message);
+      detener();
+    }
+  }
+  // Pausa previa para títulos (efecto de jerarquía dramática)
+  if (pausaPrevia > 0) {
+    setTimeout(doSpeak, pausaPrevia);
+  } else {
+    doSpeak();
+  }
+  // Actualizar panel de pantalla de bloqueo con el capítulo actual
+  if ('mediaSession' in navigator) actualizarMediaSession();
+}
+
+// ══════════════════════════════════════════════════════
+//  UI HELPERS
+// ══════════════════════════════════════════════════════
+function setSt(msg) {
+  document.getElementById('st').textContent = msg || 'Tocá una oración para leer desde ahí';
+}
+function showLoad(msg) {
+  document.getElementById('lmsg').textContent = msg;
+  document.getElementById('lov').style.display = 'flex';
+}
+function hideLoad() {
+  document.getElementById('lov').style.display = 'none';
+}
+
+// ══════════════════════════════════════════════════════
+//  MANTENER TTS ACTIVO CON PANTALLA BLOQUEADA
+//  Versión definitiva — 5 capas simultáneas:
+//
+//  1. Audio WAV real en base64 en loop
+//     → Android lo trata como proceso multimedia real
+//     → Superior al oscilador: es audio HTML nativo
+//  2. OscillatorNode AudioContext (respaldo del WAV)
+//  3. MediaSession API (controles en pantalla de bloqueo)
+//  4. Wake Lock API (pide no suspender)
+//  5. Heartbeat 2s + visibilitychange + blur/focus
+// ══════════════════════════════════════════════════════
+var wakeLock = null;
+var bgAudioCtx = null;
+var bgAudioSrc = null;
+var heartbeatTimer = null;
+
+// WAV de 1 segundo de silencio real en base64
+var SILENT_WAV = 'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+// Crear bgAudioEl al cargar — listo antes del primer play
+var bgAudioEl = new Audio(SILENT_WAV);
+bgAudioEl.loop = true;
+bgAudioEl.volume = 0.001;
+
+function actualizarMediaSession(titulo) {
+  if (!('mediaSession' in navigator)) return;
+  navigator.mediaSession.metadata = new MediaMetadata({
+    title: titulo || 'Lectura Pura',
+    artist: 'Lectura Pura',
+    album: (bib[libIdx] ? bib[libIdx].titulo : ''),
+    artwork: [
+      { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },
+      { src: 'icon-512.png', sizes: '512x512', type: 'image/png' }
+    ]
+  });
+  navigator.mediaSession.setActionHandler('play',          function(){ if (!playing) togPlay(); });
+  navigator.mediaSession.setActionHandler('pause',         function(){ if (playing)  togPlay(); });
+  navigator.mediaSession.setActionHandler('previoustrack', function(){ sentPrev(); });
+  navigator.mediaSession.setActionHandler('nexttrack',     function(){ sentNext(); });
+  navigator.mediaSession.setActionHandler('seekbackward',  function(){ sentPrev(); });
+  navigator.mediaSession.setActionHandler('seekforward',   function(){ sentNext(); });
+}
+
+function activarWakeLock() {
+  // Capa 0: MediaSession — registrar en pantalla de bloqueo
+  actualizarMediaSession();
+
+  // Capa 1: Wake Lock — no suspender pantalla
+  if ('wakeLock' in navigator && !wakeLock) {
+    navigator.wakeLock.request('screen').then(function(wl) {
+      wakeLock = wl;
+      wl.addEventListener('release', function() { wakeLock = null; });
+    }).catch(function(){});
+  }
+
+  // Capa 2: Audio WAV real en loop (TÉCNICA PRINCIPAL)
+  // El elemento <audio> HTML con un WAV real es lo que Android
+  // reconoce como proceso multimedia — le asigna prioridad máxima
+  // y no lo mata al bloquear. Superior al oscilador AudioContext.
+  // Solo iniciar si no está ya reproduciendo
+  if (bgAudioEl.paused) {
+    bgAudioEl.play().catch(function(e){ console.warn('bgAudio:', e.message); });
+  }
+
+  // Capa 3: OscillatorNode como respaldo adicional
+  try {
+    if (!bgAudioCtx || bgAudioCtx.state === 'closed') {
+      bgAudioCtx = new (window.AudioContext || window.webkitAudioContext)({
+        latencyHint: 'playback', sampleRate: 44100
+      });
+    }
+    if (bgAudioCtx.state === 'suspended') bgAudioCtx.resume().catch(function(){});
+    if (!bgAudioSrc) {
+      var osc = bgAudioCtx.createOscillator();
+      var gainNode = bgAudioCtx.createGain();
+      var filter = bgAudioCtx.createBiquadFilter();
+      osc.type = 'sine';
+      osc.frequency.value = 0.8;
+      gainNode.gain.value = 0.0008;
+      filter.type = 'lowpass';
+      filter.frequency.value = 10;
+      osc.connect(filter);
+      filter.connect(gainNode);
+      gainNode.connect(bgAudioCtx.destination);
+      osc.start(0);
+      bgAudioSrc = osc;
+    }
+  } catch(e) {}
+
+  // Capa 4: Heartbeat cada 2s
+  clearInterval(heartbeatTimer);
+  heartbeatTimer = setInterval(function() {
+    if (!playing) { clearInterval(heartbeatTimer); heartbeatTimer = null; return; }
+    if (bgAudioCtx && bgAudioCtx.state === 'suspended') bgAudioCtx.resume().catch(function(){});
+    if (bgAudioEl && bgAudioEl.paused) bgAudioEl.play().catch(function(){});
+    if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending && !UTTERANCE) {
+      clearTimeout(WATCHDOG);
+      hablar();
+    }
+  }, 2000);
+}
+
+function desactivarWakeLock() {
+  clearInterval(heartbeatTimer); heartbeatTimer = null;
+  if (wakeLock) { wakeLock.release().catch(function(){}); wakeLock = null; }
+  if (bgAudioEl) { bgAudioEl.pause(); }
+  try { if (bgAudioSrc) { bgAudioSrc.stop(); bgAudioSrc.disconnect(); } } catch(e){}
+  if (bgAudioCtx) { try { bgAudioCtx.close(); } catch(e){} bgAudioCtx = null; bgAudioSrc = null; }
+}
+
+// Capa 4: Al desbloquear pantalla — relanzar agresivamente
+document.addEventListener('visibilitychange', function() {
+  if (document.visibilityState === 'visible' && playing) {
+    if (bgAudioCtx && bgAudioCtx.state === 'suspended') bgAudioCtx.resume().catch(function(){});
+    if ('wakeLock' in navigator && !wakeLock) {
+      navigator.wakeLock.request('screen').then(function(wl){ wakeLock = wl; }).catch(function(){});
+    }
+    setTimeout(function() {
+      if (playing) {
+        window.speechSynthesis.cancel();
+        UTTERANCE = null;
+        clearTimeout(WATCHDOG);
+        hablar();
+      }
+    }, 150);
+  }
+  // En WebView de APK: pantalla bloqueada = 'hidden', NO parar
+  // El heartbeat sigue corriendo y relanza el TTS automáticamente
+  if (document.visibilityState === 'hidden' && playing) {
+    if (bgAudioCtx && bgAudioCtx.state === 'suspended') bgAudioCtx.resume().catch(function(){});
+    if (bgAudioEl && bgAudioEl.paused) bgAudioEl.play().catch(function(){});
+  }
+});
+
+window.addEventListener('blur', function() {
+  if (playing) {
+    if (bgAudioCtx && bgAudioCtx.state === 'suspended') bgAudioCtx.resume().catch(function(){});
+    if (bgAudioEl && bgAudioEl.paused) bgAudioEl.play().catch(function(){});
+  }
+});
+
+window.addEventListener('focus', function() {
+  if (playing) {
+    if (bgAudioCtx && bgAudioCtx.state === 'suspended') bgAudioCtx.resume().catch(function(){});
+    setTimeout(function() {
+      if (playing && !window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+        UTTERANCE = null;
+        clearTimeout(WATCHDOG);
+        hablar();
+      }
+    }, 200);
+  }
+});
+
+</script>
+
+<script>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(function(e) {
+    console.log('SW no registrado:', e.message);
+  });
+}
+</script>
+</body>
+</html>
