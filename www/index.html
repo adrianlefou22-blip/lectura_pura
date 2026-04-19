@@ -43,12 +43,18 @@
   }
 
   window.__ttsOnEnd = function(){
-    fakeSynth.speaking = false;
-    if (_current && _current.onend) { var u=_current; _current=null; u.onend({}); }
+    // Pequeño delay para que UTTERANCE.onend se procese ANTES
+    // que cualquier heartbeat detecte speaking=false
+    setTimeout(function(){
+      fakeSynth.speaking = false;
+      if (_current && _current.onend) { var u=_current; _current=null; u.onend({}); }
+    }, 30);
   };
   window.__ttsOnError = function(msg){
-    fakeSynth.speaking = false;
-    if (_current && _current.onerror) { var u=_current; _current=null; u.onerror({error:msg}); }
+    setTimeout(function(){
+      fakeSynth.speaking = false;
+      if (_current && _current.onerror) { var u=_current; _current=null; u.onerror({error:msg}); }
+    }, 30);
   };
 
   var fakeSynth = {
@@ -344,6 +350,7 @@ var sideOpen = true;
 var temaOscuro = false;
 var UTTERANCE = null;   // referencia global — evita GC de Android
 var WATCHDOG = null;
+var _ultimoOnEnd = 0; // timestamp del último onend — evita heartbeat prematuro
 var velActual = 1.0;    // velocidad TTS (reemplaza slider)
 var tamFuente = 1.1;    // tamaño fuente en rem
 
@@ -1238,6 +1245,7 @@ function hablar() {
   UTTERANCE.onend = function() {
     clearTimeout(WATCHDOG); WATCHDOG = null;
     UTTERANCE = null;
+    _ultimoOnEnd = Date.now();
     if (!playing) return;
     sentI++;
     setTimeout(hablar, 50);
@@ -1246,6 +1254,7 @@ function hablar() {
   UTTERANCE.onerror = function(e) {
     clearTimeout(WATCHDOG); WATCHDOG = null;
     UTTERANCE = null;
+    _ultimoOnEnd = Date.now();
     if (e.error === 'interrupted' || e.error === 'canceled') return;
     console.warn('TTS error:', e.error);
     if (playing) { sentI++; setTimeout(hablar, 200); }
@@ -1263,6 +1272,7 @@ function hablar() {
         if (!playing) return;
         console.warn('Watchdog — forzando avance tras ' + _wdMs + 'ms');
         UTTERANCE = null;
+        _ultimoOnEnd = Date.now();
         sentI++;
         hablar();
       }, _wdMs);
@@ -1385,14 +1395,16 @@ function activarWakeLock() {
     }
   } catch(e) {}
 
-  // Capa 4: Heartbeat cada 2s
+  // Capa 4: Heartbeat cada 2s — SOLO recuperación, no avance normal
   clearInterval(heartbeatTimer);
   heartbeatTimer = setInterval(function() {
     if (!playing) { clearInterval(heartbeatTimer); heartbeatTimer = null; return; }
     if (bgAudioCtx && bgAudioCtx.state === 'suspended') bgAudioCtx.resume().catch(function(){});
     if (bgAudioEl && bgAudioEl.paused) bgAudioEl.play().catch(function(){});
-    if (!window.speechSynthesis.speaking && !window.speechSynthesis.pending && !UTTERANCE) {
-      clearTimeout(WATCHDOG);
+    // Solo intervenir si llevan más de 4s sin actividad Y sin utterance activa
+    var ahora = Date.now();
+    if (!UTTERANCE && !WATCHDOG && (ahora - _ultimoOnEnd) > 4000) {
+      console.log('[Heartbeat] Recuperando TTS colgado');
       hablar();
     }
   }, 2000);
@@ -1414,13 +1426,12 @@ document.addEventListener('visibilitychange', function() {
       navigator.wakeLock.request('screen').then(function(wl){ wakeLock = wl; }).catch(function(){});
     }
     setTimeout(function() {
-      if (playing) {
+      if (playing && !UTTERANCE) {
         window.speechSynthesis.cancel();
-        UTTERANCE = null;
         clearTimeout(WATCHDOG);
         hablar();
       }
-    }, 150);
+    }, 300);
   }
   // En WebView de APK: pantalla bloqueada = 'hidden', NO parar
   // El heartbeat sigue corriendo y relanza el TTS automáticamente
