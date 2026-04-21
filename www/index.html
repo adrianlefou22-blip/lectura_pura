@@ -80,7 +80,7 @@ body{font-family:var(--fb);background:var(--bg);color:var(--tx);min-height:100vh
 .bcard small{color:var(--tx2);font-size:.7rem}
 .pbar{height:2px;background:var(--bor);border-radius:2px;margin-top:8px}
 .pfill{height:100%;background:var(--gold);border-radius:2px;transition:width .3s}
-.bdel{position:absolute;top:9px;right:9px;background:none;border:none;color:var(--tx2);font-size:.72rem;cursor:pointer;opacity:0;transition:opacity .2s}
+.bdel{position:absolute;top:9px;right:9px;background:none;border:none;color:var(--tx2);font-size:.85rem;cursor:pointer;opacity:.5;transition:opacity .2s}
 .bcard:hover .bdel{opacity:1}
 .bdel:hover{color:#c0392b}
 .add-btn{width:100%;border:2px dashed var(--bor);background:transparent;color:var(--tx2);padding:14px;border-radius:var(--r);cursor:pointer;font-family:var(--fb);font-size:.86rem;transition:all .2s;margin-top:2px}
@@ -732,68 +732,73 @@ async function leerPDF(file) {
 }
 
 // ══════════════════════════════════════════════════════
-//  OCR PARA PDFs ESCANEADOS — usa Scribe.js
-//  Procesa página por página para no saturar la RAM.
-//  El texto se va acumulando y al final se devuelve todo.
+//  OCR PARA PDFs ESCANEADOS — usa Tesseract.js
+//  Funciona offline en WebView de Android (no usa Workers externos).
+//  Renderiza cada página con PDF.js → canvas → OCR en español.
 // ══════════════════════════════════════════════════════
-var scribeIniciado = false;
+var tesseractWorker = null;
 
-async function initScribe() {
-  if (scribeIniciado) return;
-  // Cargar Scribe.js dinámicamente solo cuando se necesita
+async function getTesseractWorker() {
+  if (tesseractWorker) return tesseractWorker;
+  showLoad('Cargando motor OCR...');
+  // Cargar Tesseract.js desde CDN
   await new Promise(function(resolve, reject) {
+    if (window.Tesseract) { resolve(); return; }
     var s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr/scribe.js';
-    s.type = 'module';
+    s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
     s.onload = resolve;
     s.onerror = reject;
     document.head.appendChild(s);
   });
-  scribeIniciado = true;
+  showLoad('Inicializando OCR en español...');
+  tesseractWorker = await Tesseract.createWorker('spa', 1, {
+    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+    langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js',
+    logger: function(m) {
+      if (m.status === 'recognizing text') {
+        var pct = Math.round((m.progress || 0) * 100);
+        showLoad('OCR en progreso: ' + pct + '%');
+      }
+    }
+  });
+  return tesseractWorker;
 }
 
 async function leerPDFconOCR(file, pdfDoc) {
-  showLoad('Cargando motor OCR (primera vez puede tardar 30s)...');
+  showLoad('PDF escaneado — iniciando OCR...');
 
-  // Importar Scribe.js como módulo ESM
-  var scribe;
+  var worker;
   try {
-    var mod = await import('https://cdn.jsdelivr.net/npm/scribe.js-ocr/scribe.js');
-    scribe = mod.default || mod;
+    worker = await getTesseractWorker();
   } catch(e) {
-    throw new Error('No se pudo cargar el motor OCR. Verificá tu conexión a internet.');
+    throw new Error('No se pudo iniciar el OCR. Verificá tu conexión a internet.');
   }
-
-  await scribe.init({ loadOcr: true, loadFont: false });
 
   var textoTotal = '';
   var numPages = pdfDoc.numPages;
 
   for (var i = 1; i <= numPages; i++) {
-    showLoad('OCR: página ' + i + ' de ' + numPages + ' — esto puede tardar...');
+    showLoad('OCR: página ' + i + ' de ' + numPages + '...');
 
     try {
-      // Renderizar página a canvas
+      // Renderizar página a canvas con PDF.js
       var page = await pdfDoc.getPage(i);
-      var viewport = page.getViewport({ scale: 2.0 }); // escala 2x para mejor OCR
+      var viewport = page.getViewport({ scale: 2.0 });
       var canvas = document.createElement('canvas');
-      canvas.width = viewport.width;
+      canvas.width  = viewport.width;
       canvas.height = viewport.height;
       var ctx = canvas.getContext('2d');
       await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
-      // Convertir canvas a blob
-      var blob = await new Promise(function(res) {
-        canvas.toBlob(res, 'image/png');
-      });
-
-      // Hacer OCR en español
-      var result = await scribe.extractText([blob], ['spa']);
-      if (result && result.trim().length > 5) {
-        textoTotal += result + '\n\n';
+      // OCR en la imagen del canvas
+      var result = await worker.recognize(canvas);
+      var texto = result.data.text || '';
+      if (texto.trim().length > 5) {
+        textoTotal += texto + '\n\n';
       }
 
-      // Liberar canvas de memoria
+      // Liberar canvas
       canvas.width = 0;
       canvas.height = 0;
 
@@ -801,8 +806,8 @@ async function leerPDFconOCR(file, pdfDoc) {
       console.warn('OCR falló en página ' + i + ':', e.message);
     }
 
-    // Tick al event loop cada 3 páginas
-    if (i % 3 === 0) {
+    // Tick al event loop cada 2 páginas
+    if (i % 2 === 0) {
       await new Promise(function(r) { setTimeout(r, 0); });
     }
   }
@@ -810,7 +815,7 @@ async function leerPDFconOCR(file, pdfDoc) {
   if (!textoTotal || textoTotal.trim().length < 50) {
     throw new Error(
       'El OCR no pudo extraer texto de este PDF.\n' +
-      'El documento puede estar en un idioma no soportado o ser de muy baja calidad.'
+      'El documento puede tener muy baja calidad o estar rotado.'
     );
   }
 
