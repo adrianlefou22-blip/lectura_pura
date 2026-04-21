@@ -711,6 +711,7 @@ async function leerPDF(file) {
   var txt = '';
   var paginasConTexto = 0;
 
+  // Primera pasada: extraer texto nativo
   for (var i = 1; i <= pdf.numPages; i++) {
     showLoad('PDF: página ' + i + ' de ' + pdf.numPages + '...');
     var pg = await pdf.getPage(i);
@@ -720,16 +721,100 @@ async function leerPDF(file) {
     txt += pagTxt + '\n\n';
   }
 
-  // Detectar PDF escaneado: si menos del 20% de páginas tienen texto
-  if (paginasConTexto < pdf.numPages * 0.2 && pdf.numPages > 2) {
+  // PDF con texto nativo — devolver directamente
+  if (paginasConTexto >= pdf.numPages * 0.2 || pdf.numPages <= 2) {
+    return txt;
+  }
+
+  // PDF escaneado — intentar OCR con Scribe.js
+  showLoad('PDF escaneado detectado. Iniciando OCR...');
+  return await leerPDFconOCR(file, pdf);
+}
+
+// ══════════════════════════════════════════════════════
+//  OCR PARA PDFs ESCANEADOS — usa Scribe.js
+//  Procesa página por página para no saturar la RAM.
+//  El texto se va acumulando y al final se devuelve todo.
+// ══════════════════════════════════════════════════════
+var scribeIniciado = false;
+
+async function initScribe() {
+  if (scribeIniciado) return;
+  // Cargar Scribe.js dinámicamente solo cuando se necesita
+  await new Promise(function(resolve, reject) {
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr/scribe.js';
+    s.type = 'module';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  scribeIniciado = true;
+}
+
+async function leerPDFconOCR(file, pdfDoc) {
+  showLoad('Cargando motor OCR (primera vez puede tardar 30s)...');
+
+  // Importar Scribe.js como módulo ESM
+  var scribe;
+  try {
+    var mod = await import('https://cdn.jsdelivr.net/npm/scribe.js-ocr/scribe.js');
+    scribe = mod.default || mod;
+  } catch(e) {
+    throw new Error('No se pudo cargar el motor OCR. Verificá tu conexión a internet.');
+  }
+
+  await scribe.init({ loadOcr: true, loadFont: false });
+
+  var textoTotal = '';
+  var numPages = pdfDoc.numPages;
+
+  for (var i = 1; i <= numPages; i++) {
+    showLoad('OCR: página ' + i + ' de ' + numPages + ' — esto puede tardar...');
+
+    try {
+      // Renderizar página a canvas
+      var page = await pdfDoc.getPage(i);
+      var viewport = page.getViewport({ scale: 2.0 }); // escala 2x para mejor OCR
+      var canvas = document.createElement('canvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      var ctx = canvas.getContext('2d');
+      await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+      // Convertir canvas a blob
+      var blob = await new Promise(function(res) {
+        canvas.toBlob(res, 'image/png');
+      });
+
+      // Hacer OCR en español
+      var result = await scribe.extractText([blob], ['spa']);
+      if (result && result.trim().length > 5) {
+        textoTotal += result + '\n\n';
+      }
+
+      // Liberar canvas de memoria
+      canvas.width = 0;
+      canvas.height = 0;
+
+    } catch(e) {
+      console.warn('OCR falló en página ' + i + ':', e.message);
+    }
+
+    // Tick al event loop cada 3 páginas
+    if (i % 3 === 0) {
+      await new Promise(function(r) { setTimeout(r, 0); });
+    }
+  }
+
+  if (!textoTotal || textoTotal.trim().length < 50) {
     throw new Error(
-      'Este PDF parece ser un escaneado (imágenes).\n' +
-      'Solo ' + paginasConTexto + ' de ' + pdf.numPages + ' páginas tienen texto extraíble.\n\n' +
-      'Para leer PDFs escaneados necesitás convertirlos a texto primero con una app de OCR.'
+      'El OCR no pudo extraer texto de este PDF.\n' +
+      'El documento puede estar en un idioma no soportado o ser de muy baja calidad.'
     );
   }
 
-  return txt;
+  return textoTotal;
 }
 
 // ══════════════════════════════════════════════════════
