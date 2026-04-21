@@ -220,6 +220,7 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
         <div id="ch-header">
           <div id="ch-title"></div>
           <small id="ch-info"></small>
+          <button id="btn-export" onclick="exportarTXT()" style="display:none;margin-top:8px;background:none;border:1px solid var(--gold);color:var(--gold);padding:5px 14px;border-radius:20px;font-family:var(--fb);font-size:.75rem;cursor:pointer">⬇ Guardar como TXT</button>
         </div>
         <div id="pcon"></div>
       </div>
@@ -693,6 +694,11 @@ async function procesarArchivo(file) {
     }
 
     var libro = buildLibro(titulo, txt);
+    // Si vino de OCR, guardar texto plano para exportar
+    if (window._ultimoOCR) {
+      libro.ocrTexto = window._ultimoOCR;
+      window._ultimoOCR = null;
+    }
     bib.unshift(libro);
     guardar(); renderBib(); hideLoad(); abrirLibro(0);
   } catch(err) {
@@ -819,6 +825,8 @@ async function leerPDFconOCR(file, pdfDoc) {
     );
   }
 
+  // Guardar texto plano para exportar después
+  window._ultimoOCR = textoTotal;
   return textoTotal;
 }
 
@@ -1004,6 +1012,9 @@ function abrirLibro(i) {
   document.getElementById('tb-title').textContent = libro.titulo;
   document.getElementById('ctrl').style.display = 'flex';
   renderIdx(); showCap(); renderBib();
+  // Mostrar botón exportar si tiene texto OCR guardado
+  var btnExp = document.getElementById('btn-export');
+  if (btnExp) btnExp.style.display = libro.ocrTexto ? 'inline-block' : 'none';
   if (window.innerWidth <= 600) {
     sideOpen = false;
     document.getElementById('sidebar').classList.add('col');
@@ -1366,6 +1377,33 @@ function hablar() {
   }
   // Actualizar panel de pantalla de bloqueo con el capítulo actual
   if ('mediaSession' in navigator) actualizarMediaSession();
+}
+
+// ══════════════════════════════════════════════════════
+//  EXPORTAR TXT
+// ══════════════════════════════════════════════════════
+function exportarTXT() {
+  if (libIdx === null) return;
+  var libro = bib[libIdx];
+  var texto = libro.ocrTexto;
+  if (!texto) {
+    // Reconstruir desde párrafos si no hay OCR guardado
+    texto = libro.caps.map(function(cap) {
+      return cap.titulo + '\n\n' + cap.pars.join('\n\n');
+    }).join('\n\n─────────────────\n\n');
+  }
+  var blob = new Blob([texto], { type: 'text/plain;charset=utf-8' });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = (libro.titulo || 'libro') + '.txt';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(function() {
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, 1000);
+  setSt('TXT descargado: ' + a.download);
 }
 
 // ══════════════════════════════════════════════════════
