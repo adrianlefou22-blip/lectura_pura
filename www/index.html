@@ -14,104 +14,6 @@
 <link rel="manifest" href="manifest.json">
 <title>Lectura Pura</title>
 <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700&family=Source+Serif+4:wght@300;400;600&display=swap" rel="stylesheet">
-<script>
-// ══════════════════════════════════════════════════════
-//  SHIM TTS — usa Android JavascriptInterface nativo
-//  Inyectado por MainActivity.java via addJavascriptInterface
-//  En Chrome/Brave normal: speechSynthesis sigue igual
-// ══════════════════════════════════════════════════════
-(function(){
-  // AndroidTTS es inyectado por Java — si existe, usarlo
-  if (!window.AndroidTTS) return;
-
-  console.log('[TTS Shim] AndroidTTS detectado, activando shim nativo');
-
-  var _speaking = false;
-  var _current = null;
-
-  function FakeUtterance(text){
-    this.text = text;
-    this.lang = 'es-ES';
-    this.rate = 1.0;
-    this.pitch = 1.0;
-    this.volume = 1.0;
-    this.voice = null;
-    this.voiceURI = null;
-    this.onstart = null;
-    this.onend = null;
-    this.onerror = null;
-  }
-
-  var voices = [
-    {name:'Android TTS (es-ES)', lang:'es-ES', localService:true,
-     voiceURI:'android-native', default:true}
-  ];
-
-  // Callback global que Java llama cuando termina de hablar
-  window.__ttsOnEnd = function(){
-    _speaking = false;
-    if (_current && _current.onend) {
-      var u = _current;
-      _current = null;
-      u.onend({});
-    }
-  };
-  window.__ttsOnError = function(msg){
-    _speaking = false;
-    if (_current && _current.onerror) {
-      var u = _current;
-      _current = null;
-      u.onerror({error: msg || 'synthesis-failed'});
-    }
-  };
-
-  var fakeSynth = {
-    speaking: false,
-    pending: false,
-    paused: false,
-    onvoiceschanged: null,
-    getVoices: function(){ return voices; },
-    speak: function(u){
-      _current = u;
-      _speaking = true;
-      this.speaking = true;
-      var txt = (u.text||'').trim();
-      if (!txt || txt.length < 2){
-        _speaking = false; this.speaking = false;
-        if (u.onend) setTimeout(function(){ u.onend({}); }, 30);
-        return;
-      }
-      if (u.onstart) u.onstart({});
-      try {
-        window.AndroidTTS.speak(
-          txt,
-          u.lang || 'es-ES',
-          String(u.rate  !== undefined ? u.rate  : 1.0),
-          String(u.pitch !== undefined ? u.pitch : 1.0)
-        );
-      } catch(e){
-        _speaking = false; this.speaking = false;
-        if (u.onerror) u.onerror({error: e.message});
-      }
-    },
-    cancel: function(){
-      _speaking = false; this.speaking = false;
-      _current = null;
-      try { window.AndroidTTS.stop(); } catch(e){}
-    },
-    pause:  function(){},
-    resume: function(){}
-  };
-
-  Object.defineProperty(window,'speechSynthesis',{get:function(){return fakeSynth;},configurable:true});
-  window.SpeechSynthesisUtterance = FakeUtterance;
-
-  // Disparar onvoiceschanged para que initVoces() funcione
-  setTimeout(function(){
-    if (fakeSynth.onvoiceschanged) fakeSynth.onvoiceschanged();
-  }, 100);
-})();
-</script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
@@ -348,6 +250,133 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;heigh
 
 <script>
 // ══════════════════════════════════════════════════════
+//  PUENTE TTS NATIVO ANDROID
+//  Usa AndroidTTS (Java) inyectado por MainActivity.
+//  Emula window.speechSynthesis para que toda la app
+//  funcione sin cambios.
+// ══════════════════════════════════════════════════════
+(function() {
+  // Si ya existe speechSynthesis nativo, no hacer nada
+  if ('speechSynthesis' in window) return;
+
+  function instalarPuenteTTS() {
+    if (!window.AndroidTTS) return false;
+
+    var _speaking = false;
+    var _queue = [];
+    var _onvoiceschanged = null;
+    var _currentUtt = null;
+
+    // El TTS nativo no tiene callback onend directo desde Java
+    // Usamos duración estimada para disparar onend
+    function estimarDuracion(texto, rate) {
+      // ~13 caracteres por segundo a velocidad 1.0
+      var chars = texto.length;
+      var segundos = (chars / 13) / rate;
+      return Math.max(500, segundos * 1000);
+    }
+
+    function runNext() {
+      if (!_queue.length) { _speaking = false; return; }
+      var utt = _queue.shift();
+      _speaking = true;
+      _currentUtt = utt;
+
+      var lang = (utt.voice && utt.voice.lang) ? utt.voice.lang
+               : (utt.lang || 'es-ES');
+      var rate  = utt.rate  !== undefined ? parseFloat(utt.rate)  : 1.0;
+      var pitch = utt.pitch !== undefined ? parseFloat(utt.pitch) : 1.0;
+
+      try {
+        window.AndroidTTS.setLanguage(lang);
+        window.AndroidTTS.speak(utt.text || '', rate, pitch);
+      } catch(e) { console.warn('AndroidTTS.speak error:', e); }
+
+      if (utt.onstart) setTimeout(function() {
+        if (utt.onstart) utt.onstart({ type: 'start' });
+      }, 50);
+
+      // Disparar onend estimado
+      var dur = estimarDuracion(utt.text || '', rate);
+      setTimeout(function() {
+        if (_currentUtt !== utt) return; // fue cancelado
+        _speaking = false;
+        _currentUtt = null;
+        if (utt.onend) utt.onend({ type: 'end' });
+        runNext();
+      }, dur);
+    }
+
+    // Crear voces sintéticas en español
+    var _voices = [
+      { name: 'Android español', lang: 'es-ES', localService: true,
+        default: true, voiceURI: 'es-ES' },
+      { name: 'Android español MX', lang: 'es-MX', localService: true,
+        default: false, voiceURI: 'es-MX' }
+    ];
+
+    window.SpeechSynthesisUtterance = function(text) {
+      this.text  = text || '';
+      this.lang  = 'es-ES';
+      this.rate  = 1.0;
+      this.pitch = 1.0;
+      this.volume = 1.0;
+      this.voice = null;
+      this.voiceURI = '';
+      this.onstart = null;
+      this.onend   = null;
+      this.onerror = null;
+    };
+
+    window.speechSynthesis = {
+      get speaking() { return _speaking; },
+      get pending()  { return _queue.length > 0; },
+      paused: false,
+      speak: function(utt) {
+        _queue.push(utt);
+        if (!_speaking) runNext();
+      },
+      cancel: function() {
+        _queue = [];
+        _speaking = false;
+        _currentUtt = null;
+        try { window.AndroidTTS.stop(); } catch(e) {}
+      },
+      pause:    function() {},
+      resume:   function() {},
+      getVoices: function() { return _voices; }
+    };
+
+    Object.defineProperty(window.speechSynthesis, 'onvoiceschanged', {
+      configurable: true,
+      set: function(fn) {
+        _onvoiceschanged = fn;
+        // Disparar inmediatamente ya que las voces están listas
+        setTimeout(fn, 100);
+      },
+      get: function() { return _onvoiceschanged; }
+    });
+
+    console.log('Puente TTS Android instalado OK');
+    return true;
+  }
+
+  // Intentar instalar ahora o cuando Capacitor/Activity esté lista
+  if (!instalarPuenteTTS()) {
+    window.onNativeTTSReady = function() {
+      instalarPuenteTTS();
+    };
+    // Reintentar cada 200ms hasta 3 segundos
+    var intentos = 0;
+    var timer = setInterval(function() {
+      intentos++;
+      if (instalarPuenteTTS() || intentos > 15) clearInterval(timer);
+    }, 200);
+  }
+})();
+</script>
+<script>
+// ══════════════════════════════════════════════════════
 //  PDF.JS
 // ══════════════════════════════════════════════════════
 pdfjsLib.GlobalWorkerOptions.workerSrc =
@@ -366,7 +395,6 @@ var sideOpen = true;
 var temaOscuro = false;
 var UTTERANCE = null;   // referencia global — evita GC de Android
 var WATCHDOG = null;
-var _wdRetry = 0;
 var velActual = 1.0;    // velocidad TTS (reemplaza slider)
 var tamFuente = 1.1;    // tamaño fuente en rem
 
@@ -374,18 +402,14 @@ var tamFuente = 1.1;    // tamaño fuente en rem
 //  ARRANQUE — el toque desbloquea el audio en mobile
 // ══════════════════════════════════════════════════════
 function arrancar() {
-  if (!('speechSynthesis' in window)) {
-    document.getElementById('welcome').innerHTML =
-      '<h2 style="color:var(--gold);font-family:var(--fd);margin-bottom:16px">Sin soporte de voz</h2>' +
-      '<p style="color:var(--tx2);max-width:280px">Usá Chrome o Brave en Android.</p>';
-    return;
-  }
   // Desbloquear audio dentro del gesto táctil (obligatorio en mobile)
   try {
-    UTTERANCE = new SpeechSynthesisUtterance(' ');
-    UTTERANCE.volume = 0;
-    window.speechSynthesis.speak(UTTERANCE);
-    setTimeout(function(){ window.speechSynthesis.cancel(); UTTERANCE = null; }, 300);
+    if ('speechSynthesis' in window) {
+      UTTERANCE = new SpeechSynthesisUtterance(' ');
+      UTTERANCE.volume = 0;
+      window.speechSynthesis.speak(UTTERANCE);
+      setTimeout(function(){ window.speechSynthesis.cancel(); UTTERANCE = null; }, 300);
+    }
   } catch(e) { UTTERANCE = null; }
 
   document.getElementById('welcome').style.display = 'none';
@@ -867,58 +891,15 @@ function normTTS(texto) {
 //  DIVIDIR EN ORACIONES
 // ══════════════════════════════════════════════════════
 function splitSents(par) {
-  var MAX = 180; // máximo chars por utterance
-  var MIN_RESTO = 25; // mínimo chars que debe tener el fragmento restante
-
-  // Paso 1: dividir por puntuación fuerte (.!?…)
   var raw = par.match(/[^.!?…]+(?:[.!?…]+(?:\s|$))+/g);
   if (!raw || !raw.length) raw = [par];
-
-  // Función para encontrar punto de corte natural
-  function cortarChunk(chunk) {
-    if (chunk.length <= MAX) return [chunk, ''];
-
-    // Primero intentar cortar por coma/punto y coma (más natural)
-    for (var i = Math.min(MAX, chunk.length-1); i > 60; i--) {
-      if (chunk[i] === ',' || chunk[i] === ';' || chunk[i] === ':') {
-        var izq = chunk.slice(0, i+1).trim();
-        var der = chunk.slice(i+1).trim();
-        if (der.length >= MIN_RESTO) return [izq, der];
-      }
-    }
-
-    // Si no hay coma, cortar en espacio — pero verificar que el resto no sea muy corto
-    for (var j = Math.min(MAX, chunk.length-1); j > 60; j--) {
-      if (chunk[j] === ' ') {
-        var izq2 = chunk.slice(0, j).trim();
-        var der2 = chunk.slice(j).trim();
-        if (der2.length >= MIN_RESTO) return [izq2, der2];
-      }
-    }
-
-    // Si el resto es muy corto pase lo que pase, incluirlo en este chunk
-    return [chunk, ''];
-  }
-
   var out = [], buf = '';
   for (var s of raw) {
     buf += s;
-    if (buf.trim().length < MAX) continue;
-    var partes = cortarChunk(buf.trim());
-    out.push(partes[0]);
-    buf = partes[1];
+    if (buf.trim().length >= 150) { out.push(buf.trim()); buf = ''; }
   }
-  if (buf.trim()) {
-    var resto = buf.trim();
-    while (resto.length > MAX) {
-      var p = cortarChunk(resto);
-      out.push(p[0]);
-      resto = p[1];
-      if (!resto) break;
-    }
-    if (resto) out.push(resto);
-  }
-  return out.filter(function(s) { return s.trim().length > 2; });
+  if (buf.trim()) out.push(buf.trim());
+  return out.filter(function(s) { return s.length > 2; });
 }
 
 // ══════════════════════════════════════════════════════
@@ -1151,9 +1132,7 @@ function parPrev() {
 // ══════════════════════════════════════════════════════
 function togPlay() {
   if (playing) { detener(); return; }
-  if (!('speechSynthesis' in window)) {
-    alert('Sin soporte de voz. Usá Chrome o Brave.'); return;
-  }
+  // speechSynthesis disponible via puente nativo o browser
   playing = true;
   document.getElementById('bp').textContent = '⏸';
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing';
@@ -1187,30 +1166,52 @@ function hablar() {
     return;
   }
 
+  var sents = splitSents(cap.pars[parI]);
+  if (sentI >= sents.length) {
+    parI++; sentI = 0; updProg(); savePos(); hablar(); return;
+  }
+
   resaltar();
   setSt('🔊 Leyendo...');
 
-  // Mandar PÁRRAFO COMPLETO — igual que @Voice
-  // El motor Google TTS maneja la prosodia internamente
-  var textoPar = normTTS(cap.pars[parI]);
-  sentI = 0;
+  var textoTTS = normTTS(sents[sentI]);
+  var textoOriginal = sents[sentI];
 
+  // ── PROSODIA ─────────────────────────────────────────
+  // Analizar la oración para ajustar parámetros de voz
+  // según el contenido, imitando la prosodia humana natural
   var baseRate  = velActual;
   var basePitch = 1.0;
   var baseVol   = 1.0;
-  var pausaPrevia = 0;
+  var pausaPrevia = 0; // ms de pausa antes de hablar
 
+  // Exclamación → tono alto, más volumen, más energía
+  if (/[!¡]/.test(textoOriginal)) {
+    basePitch = 1.2;
+    baseVol   = 1.05;
+  }
+  // Interrogación → tono más alto (inflexión final ascendente)
+  else if (/[?¿]/.test(textoOriginal)) {
+    basePitch = 1.15;
+  }
+  // Puntos suspensivos → velocidad más lenta, efecto reflexivo
+  if (/\.{3}|…/.test(textoOriginal)) {
+    baseRate = Math.max(0.5, baseRate * 0.88);
+  }
+  // Títulos: línea corta toda en MAYÚSCULAS o empieza con "Capítulo/Chapter"
   var esTitulo = (
-    (textoPar.length < 60 && /^[A-ZÁÉÍÓÚÑÜ\s\d\-:.]+$/.test(textoPar.trim()) && textoPar.trim().length > 2)
-    || /^(cap[ií]tulo|chapter|parte|part|secci[oó]n|section)\b/i.test(textoPar.trim())
+    (textoOriginal.length < 60 && /^[A-ZÁÉÍÓÚÑÜ\s\d\-:.]+$/.test(textoOriginal.trim()) && textoOriginal.trim().length > 2)
+    || /^(cap[ií]tulo|chapter|parte|part|secci[oó]n|section)/i.test(textoOriginal.trim())
   );
   if (esTitulo) {
     basePitch  = 1.18;
     baseRate   = Math.max(0.5, baseRate * 0.90);
-    pausaPrevia = 1200;
+    pausaPrevia = 1600; // pausa dramática antes del título
   }
+  // ─────────────────────────────────────────────────────
 
-  UTTERANCE = new SpeechSynthesisUtterance(textoPar);
+  // Crear utterance con referencia global (evita GC Android)
+  UTTERANCE = new SpeechSynthesisUtterance(textoTTS);
 
   // Asignar voz
   var voces = window.speechSynthesis.getVoices();
@@ -1236,12 +1237,10 @@ function hablar() {
 
   UTTERANCE.onend = function() {
     clearTimeout(WATCHDOG); WATCHDOG = null;
-    _wdRetry = 0;
     UTTERANCE = null;
     if (!playing) return;
-    parI++; sentI = 0; // avanzar al siguiente PÁRRAFO completo
-    updProg(); savePos();
-    setTimeout(hablar, 80);
+    sentI++;
+    setTimeout(hablar, 50);
   };
 
   UTTERANCE.onerror = function(e) {
@@ -1249,7 +1248,7 @@ function hablar() {
     UTTERANCE = null;
     if (e.error === 'interrupted' || e.error === 'canceled') return;
     console.warn('TTS error:', e.error);
-    if (playing) { parI++; sentI = 0; setTimeout(hablar, 200); }
+    if (playing) { sentI++; setTimeout(hablar, 200); }
   };
 
   function doSpeak() {
@@ -1259,17 +1258,8 @@ function hablar() {
       clearTimeout(WATCHDOG);
       WATCHDOG = setTimeout(function() {
         if (!playing) return;
-        _wdRetry = (_wdRetry || 0) + 1;
-        if (_wdRetry >= 2) {
-          // Después de 2 reintentos en la misma oración, avanzar
-          console.warn('Watchdog — avanzando tras ' + _wdRetry + ' reintentos');
-          _wdRetry = 0;
-          UTTERANCE = null;
-          sentI++;
-        } else {
-          console.warn('Watchdog — reintentando (' + _wdRetry + ')');
-          UTTERANCE = null;
-        }
+        console.warn('Watchdog — reintentando');
+        UTTERANCE = null;
         hablar();
       }, 20000);
       window.speechSynthesis.speak(UTTERANCE);
